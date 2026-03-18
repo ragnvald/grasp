@@ -1,0 +1,141 @@
+﻿from __future__ import annotations
+
+import json
+import tempfile
+import unittest
+from pathlib import Path
+from unittest.mock import patch
+
+import geopandas as gpd
+from shapely.geometry import Point, Polygon
+
+from grasp.ingest.service import IngestService
+from grasp.workspace import ensure_workspace, iter_supported_files
+
+
+class IngestServiceTests(unittest.TestCase):
+    def test_scan_mixed_folder_and_gpkg_layers(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            points = gpd.GeoDataFrame(
+                {"name": ["a", "b"], "kommune": ["Trondheim", "Trondheim"]},
+                geometry=[Point(10.4, 63.4), Point(10.5, 63.41)],
+                crs="EPSG:4326",
+            )
+            polygons = gpd.GeoDataFrame(
+                {"zone": ["north"]},
+                geometry=[Polygon([(10.3, 63.3), (10.6, 63.3), (10.6, 63.5), (10.3, 63.5)])],
+                crs="EPSG:4326",
+            )
+
+            points.to_file(root / "points.shp")
+            points.to_file(root / "bundle.gpkg", layer="places", driver="GPKG")
+            polygons.to_file(root / "bundle.gpkg", layer="zones", driver="GPKG")
+            points.to_file(root / "points.geojson", driver="GeoJSON")
+            points.to_parquet(root / "points.parquet", index=False)
+
+            service = IngestService()
+            datasets = service.scan_folder(root)
+
+            self.assertEqual(len(datasets), 5)
+            self.assertEqual(sum(1 for dataset in datasets if dataset.source_format == "gpkg"), 2)
+            for dataset in datasets:
+                self.assertTrue(dataset.cache_path)
+                service.ensure_dataset_cache(dataset)
+                self.assertTrue(Path(dataset.cache_path).exists())
+                self.assertTrue(dataset.geometry_type)
+
+    def test_scan_assigns_default_crs_and_normalizes_invalid_geometry(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            bowtie = Polygon([(0, 0), (2, 2), (0, 2), (2, 0), (0, 0)])
+            gdf = gpd.GeoDataFrame({"name": ["invalid"]}, geometry=[bowtie], crs=None)
+            gdf.to_parquet(root / "invalid.parquet", index=False)
+
+            service = IngestService()
+            datasets = service.scan_folder(root)
+
+            self.assertEqual(len(datasets), 1)
+            dataset = datasets[0]
+            self.assertEqual(dataset.crs.upper(), "EPSG:4326")
+            service.ensure_dataset_cache(dataset)
+            cached = gpd.read_parquet(dataset.cache_path)
+            self.assertEqual(len(cached), 1)
+            self.assertTrue(bool(cached.geometry.iloc[0].is_valid))
+
+    def test_fingerprint_matches_equivalent_datasets(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            points = gpd.GeoDataFrame(
+                {"name": ["a", "b"]},
+                geometry=[Point(10.4, 63.4), Point(10.5, 63.41)],
+                crs="EPSG:4326",
+            )
+            points.to_file(root / "points.geojson", driver="GeoJSON")
+            points.to_parquet(root / "points.parquet", index=False)
+
+            service = IngestService()
+            datasets = sorted(service.scan_folder(root), key=lambda item: item.source_format)
+
+            self.assertEqual(len(datasets), 2)
+            self.assertEqual(datasets[0].fingerprint, datasets[1].fingerprint)
+
+    def test_scan_ignores_non_geojson_json_files(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            points = gpd.GeoDataFrame(
+                {"name": ["a"]},
+                geometry=[Point(10.4, 63.4)],
+                crs="EPSG:4326",
+            )
+            points.to_file(root / "points.geojson", driver="GeoJSON")
+            (root / "settings.json").write_text(json.dumps({"app": "grasp", "version": 1}), encoding="utf-8")
+
+            service = IngestService()
+            datasets = service.scan_folder(root)
+
+            self.assertEqual(len(datasets), 1)
+            self.assertEqual(datasets[0].source_format, "geojson")
+
+    def test_scan_reuses_unchanged_existing_records(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            points = gpd.GeoDataFrame(
+                {"name": ["a", "b"]},
+                geometry=[Point(10.4, 63.4), Point(10.5, 63.41)],
+                crs="EPSG:4326",
+            )
+            points.to_file(root / "points.geojson", driver="GeoJSON")
+
+            service = IngestService()
+            first = service.scan_folder(root)
+
+            with patch.object(service, "_summarize_dataset", side_effect=AssertionError("should not resummarize unchanged data")):
+                second = service.scan_folder(root, first)
+
+            self.assertEqual(len(second), 1)
+            self.assertEqual(second[0].dataset_id, first[0].dataset_id)
+            self.assertEqual(second[0].fingerprint, first[0].fingerprint)
+
+    def test_workspace_uses_data_out_and_ignores_internal_outputs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            workspace = ensure_workspace(root)
+            self.assertEqual(workspace.workspace_path.name, "data_out")
+            self.assertTrue(workspace.temp_dir.exists())
+
+            points = gpd.GeoDataFrame(
+                {"name": ["a"]},
+                geometry=[Point(10.4, 63.4)],
+                crs="EPSG:4326",
+            )
+            points.to_file(root / "points.geojson", driver="GeoJSON")
+            points.to_file(workspace.exports_dir / "exported.geojson", driver="GeoJSON")
+
+            files = iter_supported_files(root)
+            self.assertEqual([path.name for path in files], ["points.geojson"])
+
+
+if __name__ == "__main__":
+    unittest.main()
+

@@ -1,0 +1,1549 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>GRASP Map</title>
+  <script src="qrc:///qtwebchannel/qwebchannel.js"></script>
+  <style>
+    html, body, #map { height: 100%; margin: 0; }
+    body { background: #f4f3ef; font-family: "Segoe UI", sans-serif; }
+    #map {
+      position: relative;
+      overflow: hidden;
+      touch-action: none;
+      background:
+        repeating-linear-gradient(0deg, rgba(72, 102, 118, 0.08) 0, rgba(72, 102, 118, 0.08) 1px, transparent 1px, transparent 72px),
+        repeating-linear-gradient(90deg, rgba(72, 102, 118, 0.08) 0, rgba(72, 102, 118, 0.08) 1px, transparent 1px, transparent 72px),
+        linear-gradient(180deg, rgba(255, 255, 255, 0.68), rgba(255, 255, 255, 0.12)),
+        radial-gradient(circle at top right, rgba(99, 143, 173, 0.16), transparent 34%),
+        linear-gradient(180deg, #f4f0e2, #f0f4f6);
+    }
+    #map.offline-ready {
+      cursor: grab;
+    }
+    #map.offline-dragging {
+      cursor: grabbing;
+    }
+    .status {
+      position: absolute;
+      z-index: 1000;
+      top: 12px;
+      left: 12px;
+      background: rgba(255, 255, 255, 0.92);
+      border: 1px solid rgba(45, 67, 77, 0.18);
+      border-radius: 10px;
+      padding: 10px 12px;
+      box-shadow: 0 8px 20px rgba(0, 0, 0, 0.08);
+      max-width: 320px;
+      color: #22323a;
+      font-size: 13px;
+    }
+    .status strong { display: block; margin-bottom: 4px; }
+    .offline-canvas {
+      width: 100%;
+      height: 100%;
+      display: block;
+    }
+    .offline-popup {
+      position: absolute;
+      z-index: 900;
+      max-width: 320px;
+      background: rgba(255, 255, 255, 0.96);
+      border: 1px solid rgba(45, 67, 77, 0.22);
+      border-radius: 10px;
+      padding: 10px 12px;
+      box-shadow: 0 12px 30px rgba(0, 0, 0, 0.14);
+      color: #22323a;
+      font-size: 12px;
+      line-height: 1.45;
+    }
+    .map-controls {
+      position: absolute;
+      z-index: 1000;
+      top: 12px;
+      right: 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .map-controls button {
+      border: 1px solid rgba(45, 67, 77, 0.18);
+      background: rgba(255, 255, 255, 0.95);
+      color: #22323a;
+      border-radius: 10px;
+      min-width: 98px;
+      min-height: 38px;
+      padding: 8px 10px;
+      font-size: 13px;
+      font-weight: 600;
+      box-shadow: 0 8px 20px rgba(0, 0, 0, 0.08);
+    }
+    .map-controls button:active {
+      transform: translateY(1px);
+    }
+    .layer-browser {
+      position: absolute;
+      z-index: 1000;
+      left: 50%;
+      bottom: 16px;
+      transform: translateX(-50%);
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 10px 12px;
+      border: 1px solid rgba(45, 67, 77, 0.18);
+      border-radius: 14px;
+      background: rgba(255, 255, 255, 0.95);
+      box-shadow: 0 10px 24px rgba(0, 0, 0, 0.12);
+      max-width: calc(100% - 32px);
+    }
+    .layer-browser .mode-buttons,
+    .layer-browser .nav-buttons {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .layer-browser button {
+      border: 1px solid rgba(45, 67, 77, 0.18);
+      background: rgba(245, 247, 248, 0.98);
+      color: #22323a;
+      border-radius: 10px;
+      min-height: 34px;
+      min-width: 42px;
+      padding: 6px 10px;
+      font-size: 13px;
+      font-weight: 600;
+    }
+    .layer-browser button.active {
+      background: #22577a;
+      color: #ffffff;
+      border-color: #22577a;
+    }
+    .layer-browser button:disabled {
+      opacity: 0.45;
+    }
+    .layer-browser .indicator {
+      min-width: 260px;
+      max-width: 42vw;
+      text-align: center;
+      color: #22323a;
+      line-height: 1.35;
+    }
+    .layer-browser .indicator strong {
+      display: block;
+      font-size: 13px;
+    }
+    .layer-browser .indicator span {
+      display: block;
+      font-size: 12px;
+      color: #51656f;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .leaflet-container {
+      background: transparent;
+    }
+  </style>
+</head>
+<body>
+  <div id="map"></div>
+  <div class="status" id="statusBox">
+    <strong>Map loading</strong>
+    Waiting for project state from the desktop app.
+  </div>
+  <script>
+    let bridge = null;
+    let map = null;
+    let layerControl = null;
+    let datasetLayers = {};
+    let datasetGeoJsonCache = {};
+    let blankBase = null;
+    let osmBase = null;
+    let rendererMode = "";
+    let mapHost = null;
+    let mapControls = null;
+    let layerBrowser = null;
+    let browseIndicatorTitle = null;
+    let browseIndicatorDetail = null;
+    let browsePrevButton = null;
+    let browseNextButton = null;
+    let browseFirstButton = null;
+    let browseLastButton = null;
+    let browseExtentButton = null;
+    let browseModeButton = null;
+    let visibleModeButton = null;
+    let offlineSvg = null;
+    let offlineViewportGroup = null;
+    let offlinePopup = null;
+    let offlineBaseBounds = null;
+    let offlineViewInitialized = false;
+    let offlinePointers = new Map();
+    let offlineGesture = null;
+    let offlineView = {
+      scale: 1,
+      translateX: 0,
+      translateY: 0,
+      minScale: 1,
+      maxScale: 24
+    };
+    let viewInitialized = false;
+    let lastStateBounds = [];
+    let lastKnownState = {datasets: [], bounds: []};
+    let leafletAssetsPromise = null;
+    let resizeReloadTimer = null;
+    let mapMode = "browse";
+    let browseDatasetId = "";
+    const SVG_NS = "http://www.w3.org/2000/svg";
+    const DEFAULT_OFFLINE_CANVAS_WIDTH = 1200;
+    const DEFAULT_OFFLINE_CANVAS_HEIGHT = 800;
+    const LEAFLET_CSS_URLS = [
+      "https://unpkg.com/leaflet@1.9.4/dist/leaflet.css",
+      "https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css"
+    ];
+    const LEAFLET_JS_URLS = [
+      "https://unpkg.com/leaflet@1.9.4/dist/leaflet.js",
+      "https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js"
+    ];
+
+    function status(text){
+      document.getElementById("statusBox").innerHTML = "<strong>GRASP</strong>" + text;
+    }
+
+    function loadStylesheet(url){
+      return new Promise(function(resolve, reject){
+        const existing = document.querySelector('link[data-leaflet-asset="' + url + '"]');
+        if (existing){
+          if (existing.dataset.loaded === "true"){
+            resolve();
+            return;
+          }
+          existing.addEventListener("load", function(){ resolve(); }, {once: true});
+          existing.addEventListener("error", function(){ reject(new Error("Failed to load stylesheet: " + url)); }, {once: true});
+          return;
+        }
+        const link = document.createElement("link");
+        link.rel = "stylesheet";
+        link.href = url;
+        link.dataset.leafletAsset = url;
+        link.onload = function(){
+          link.dataset.loaded = "true";
+          resolve();
+        };
+        link.onerror = function(){
+          link.remove();
+          reject(new Error("Failed to load stylesheet: " + url));
+        };
+        document.head.appendChild(link);
+      });
+    }
+
+    function loadScript(url){
+      return new Promise(function(resolve, reject){
+        if (typeof L !== "undefined"){
+          resolve();
+          return;
+        }
+        const existing = document.querySelector('script[data-leaflet-asset="' + url + '"]');
+        if (existing){
+          if (existing.dataset.loaded === "true"){
+            resolve();
+            return;
+          }
+          existing.addEventListener("load", function(){ resolve(); }, {once: true});
+          existing.addEventListener("error", function(){ reject(new Error("Failed to load script: " + url)); }, {once: true});
+          return;
+        }
+        const script = document.createElement("script");
+        script.src = url;
+        script.dataset.leafletAsset = url;
+        script.onload = function(){
+          script.dataset.loaded = "true";
+          resolve();
+        };
+        script.onerror = function(){
+          script.remove();
+          reject(new Error("Failed to load script: " + url));
+        };
+        document.head.appendChild(script);
+      });
+    }
+
+    async function ensureLeafletAssets(){
+      if (typeof L !== "undefined"){
+        return;
+      }
+      if (!leafletAssetsPromise){
+        leafletAssetsPromise = (async function(){
+          let lastError = null;
+          for (let index = 0; index < LEAFLET_JS_URLS.length; index += 1){
+            try {
+              await loadStylesheet(LEAFLET_CSS_URLS[index]);
+              await loadScript(LEAFLET_JS_URLS[index]);
+              return;
+            } catch (error) {
+              lastError = error;
+            }
+          }
+          throw lastError || new Error("Leaflet assets unavailable");
+        })();
+      }
+      try {
+        return await leafletAssetsPromise;
+      } catch (error) {
+        leafletAssetsPromise = null;
+        throw error;
+      }
+    }
+
+    function teardownOfflineMap(){
+      if (!mapHost){
+        return;
+      }
+      mapHost.classList.remove("offline-ready");
+      mapHost.classList.remove("offline-dragging");
+      mapHost.innerHTML = "";
+      offlineSvg = null;
+      offlineViewportGroup = null;
+      offlinePopup = null;
+      offlineBaseBounds = null;
+      offlineViewInitialized = false;
+      offlinePointers = new Map();
+      offlineGesture = null;
+      mapControls = null;
+      layerBrowser = null;
+      browseIndicatorTitle = null;
+      browseIndicatorDetail = null;
+      browsePrevButton = null;
+      browseNextButton = null;
+      browseFirstButton = null;
+      browseLastButton = null;
+      browseExtentButton = null;
+      browseModeButton = null;
+      visibleModeButton = null;
+    }
+
+    async function initMap(){
+      mapHost = document.getElementById("map");
+      if (map){
+        rendererMode = "leaflet";
+        ensureMapControls();
+        ensureLayerBrowser();
+        window.setTimeout(function(){
+          if (map){
+            map.invalidateSize(false);
+          }
+        }, 0);
+        return;
+      }
+      if (typeof L === "undefined"){
+        try {
+          await ensureLeafletAssets();
+        } catch (_error) {
+          ensureMapControls();
+          ensureLayerBrowser();
+          initOfflineMap();
+          status("Leaflet or basemap assets unavailable. Using local offline renderer.");
+          return;
+        }
+      }
+      teardownOfflineMap();
+      ensureMapControls();
+      ensureLayerBrowser();
+      rendererMode = "leaflet";
+      map = L.map("map", {
+        preferCanvas: true,
+        zoomControl: true,
+        scrollWheelZoom: true,
+        doubleClickZoom: true,
+        boxZoom: true,
+        touchZoom: true,
+        keyboard: true,
+        dragging: true,
+        zoomSnap: 0.25,
+        zoomDelta: 0.5,
+        minZoom: 1,
+        maxZoom: 24
+      });
+      blankBase = L.layerGroup();
+      osmBase = L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
+        maxZoom: 19,
+        crossOrigin: true,
+        attribution: "&copy; OpenStreetMap contributors"
+      });
+      osmBase.on("tileerror", function(){
+        if (map && map.hasLayer(osmBase)){
+          map.removeLayer(osmBase);
+          blankBase.addTo(map);
+          status("OSM tiles unavailable. Showing local blank background.");
+        }
+      });
+      osmBase.addTo(map);
+      layerControl = L.control.layers({"OSM": osmBase, "Blank": blankBase}, {}, {collapsed: false}).addTo(map);
+    }
+
+    function initOfflineMap(){
+      rendererMode = "offline";
+      if (offlineSvg){
+        return;
+      }
+      mapHost.classList.add("offline-ready");
+      mapHost.tabIndex = 0;
+      mapHost.innerHTML = "";
+      mapControls = null;
+
+      offlineSvg = document.createElementNS(SVG_NS, "svg");
+      offlineSvg.setAttribute("class", "offline-canvas");
+      offlineSvg.setAttribute("preserveAspectRatio", "none");
+      offlineViewportGroup = document.createElementNS(SVG_NS, "g");
+      offlineSvg.appendChild(offlineViewportGroup);
+      mapHost.appendChild(offlineSvg);
+      updateOfflineSvgViewport();
+
+      offlinePopup = document.createElement("div");
+      offlinePopup.className = "offline-popup";
+      offlinePopup.style.display = "none";
+      mapHost.appendChild(offlinePopup);
+
+      mapHost.addEventListener("click", function(event){
+        if (event.target === mapHost || event.target === offlineSvg){
+          hideOfflinePopup();
+        }
+      });
+      mapHost.addEventListener("wheel", handleOfflineWheel, {passive: false});
+      mapHost.addEventListener("pointerdown", handleOfflinePointerDown);
+      mapHost.addEventListener("pointermove", handleOfflinePointerMove);
+      mapHost.addEventListener("pointerup", handleOfflinePointerUp);
+      mapHost.addEventListener("pointercancel", handleOfflinePointerUp);
+      mapHost.addEventListener("pointerleave", handleOfflinePointerUp);
+      mapHost.addEventListener("dblclick", handleOfflineDoubleClick);
+      ensureMapControls();
+      ensureLayerBrowser();
+    }
+
+    async function loadVisibleLayers(state){
+      const datasets = (state.datasets || []).slice().sort(compareDatasetRenderOrder);
+      lastKnownState = {
+        datasets: datasets.slice(),
+        bounds: Array.isArray(state.bounds) ? state.bounds.slice() : []
+      };
+      syncBrowseSelection(datasets);
+      updateLayerBrowser(datasets);
+      const visibleDatasets = datasets.filter(function(dataset){
+        return dataset.visible;
+      });
+      const selectedDatasets = mapMode === "browse" ? currentBrowseDatasets(datasets) : visibleDatasets;
+      const visibleLayers = [];
+      for (let index = 0; index < selectedDatasets.length; index += 1){
+        const dataset = selectedDatasets[index];
+        status(
+          "Loading map layer " +
+          (index + 1) +
+          "/" +
+          selectedDatasets.length +
+          ": " +
+          escapeHtml(dataset.name || dataset.dataset_id || "dataset")
+        );
+        visibleLayers.push({
+          dataset: dataset,
+          geojson: await ensureDatasetGeoJson(dataset)
+        });
+        await yieldToUi();
+      }
+      return {datasets, visibleLayers, visibleCount: visibleDatasets.length};
+    }
+
+    async function reloadState(){
+      if (!bridge){
+        return;
+      }
+      await initMap();
+      if (!map && rendererMode !== "offline"){
+        return;
+      }
+      const raw = await bridge.getState();
+      const state = JSON.parse(raw || "{}");
+      lastStateBounds = Array.isArray(state.bounds) ? state.bounds.slice() : [];
+      if (rendererMode === "leaflet" && map){
+        map.invalidateSize(false);
+      }
+      pruneClientCaches(state);
+      const loaded = await loadVisibleLayers(state);
+
+      if (rendererMode === "offline"){
+        renderOfflineState(state, loaded.visibleLayers);
+        status("Loaded " + loaded.visibleLayers.length + " dataset(s) with local offline renderer.");
+        return;
+      }
+      await syncLeafletLayers(loaded.visibleLayers);
+      if (!viewInitialized){
+        const initialBounds = preferredInitialBounds(state, loaded.datasets);
+        if (initialBounds){
+          fitLeafletBounds(initialBounds);
+        } else {
+          map.setView([63.43, 10.39], 4);
+        }
+        viewInitialized = true;
+      }
+      const summaryText = mapMode === "browse"
+        ? "Loaded layer " + browseLayerLabel(lastKnownState.datasets) + "."
+        : "Loaded " + loaded.visibleLayers.length + " visible dataset(s).";
+      status(summaryText);
+    }
+
+    function pruneClientCaches(state){
+      const activeIds = new Set((state.datasets || []).map(function(dataset){
+        return dataset.dataset_id;
+      }));
+      for (const datasetId of Object.keys(datasetGeoJsonCache)){
+        if (!activeIds.has(datasetId)){
+          delete datasetGeoJsonCache[datasetId];
+        }
+      }
+      for (const datasetId of Object.keys(datasetLayers)){
+        if (!activeIds.has(datasetId)){
+          removeLeafletLayer(datasetId);
+        }
+      }
+    }
+
+    async function ensureDatasetGeoJson(dataset){
+      const cached = datasetGeoJsonCache[dataset.dataset_id];
+      if (cached && cached.dataToken === dataset.cache_token){
+        return cached.geojson;
+      }
+      const geojsonRaw = await bridge.getLayerGeoJson(dataset.dataset_id);
+      const geojson = JSON.parse(geojsonRaw || '{"type":"FeatureCollection","features":[]}');
+      datasetGeoJsonCache[dataset.dataset_id] = {
+        dataToken: dataset.cache_token,
+        geojson: geojson
+      };
+      return geojson;
+    }
+
+    async function syncLeafletLayers(visibleLayers){
+      const visibleIds = new Set(visibleLayers.map(function(entry){
+        return entry.dataset.dataset_id;
+      }));
+      for (const datasetId of Object.keys(datasetLayers)){
+        if (!visibleIds.has(datasetId)){
+          removeLeafletLayer(datasetId);
+        }
+      }
+      for (const entry of visibleLayers){
+        const dataset = entry.dataset;
+        const dataToken = String(dataset.cache_token || "");
+        const metaToken = datasetMetaToken(dataset);
+        const existing = datasetLayers[dataset.dataset_id];
+        if (!existing || existing.dataToken !== dataToken || existing.metaToken !== metaToken){
+          removeLeafletLayer(dataset.dataset_id);
+          datasetLayers[dataset.dataset_id] = {
+            layer: buildLeafletLayer(dataset, entry.geojson),
+            dataToken: dataToken,
+            metaToken: metaToken
+          };
+        }
+        const record = datasetLayers[dataset.dataset_id];
+        if (record && map && !map.hasLayer(record.layer)){
+          record.layer.addTo(map);
+        }
+        if (record && record.layer && record.layer.bringToFront){
+          record.layer.bringToFront();
+        }
+        await yieldToUi();
+      }
+      rebuildLayerControl(visibleLayers);
+    }
+
+    function syncBrowseSelection(datasets){
+      if (!datasets.length){
+        browseDatasetId = "";
+        return;
+      }
+      if (browseDatasetId){
+        const existing = datasets.find(function(dataset){
+          return dataset.dataset_id === browseDatasetId;
+        });
+        if (existing){
+          return;
+        }
+      }
+      browseDatasetId = datasets[0].dataset_id;
+    }
+
+    function currentBrowseDatasets(datasets){
+      const selected = currentBrowseDataset(datasets);
+      return selected ? [selected] : [];
+    }
+
+    function currentBrowseDataset(datasets){
+      if (!datasets.length){
+        return null;
+      }
+      const selected = datasets.find(function(dataset){
+        return dataset.dataset_id === browseDatasetId;
+      });
+      return selected || datasets[0];
+    }
+
+    function browseLayerLabel(datasets){
+      if (!datasets.length){
+        return "0 / 0";
+      }
+      const index = datasets.findIndex(function(dataset){
+        return dataset.dataset_id === browseDatasetId;
+      });
+      const normalizedIndex = index >= 0 ? index : 0;
+      return String(normalizedIndex + 1) + " / " + String(datasets.length);
+    }
+
+    function updateLayerBrowser(datasets){
+      ensureLayerBrowser();
+      if (!layerBrowser || !browseIndicatorTitle || !browseIndicatorDetail){
+        return;
+      }
+      const hasDatasets = datasets.length > 0;
+      const currentIndex = datasets.findIndex(function(dataset){
+        return dataset.dataset_id === browseDatasetId;
+      });
+      const normalizedIndex = currentIndex >= 0 ? currentIndex : 0;
+      const currentDataset = hasDatasets ? datasets[normalizedIndex] : null;
+      browseIndicatorTitle.textContent = hasDatasets
+        ? "Layer " + String(normalizedIndex + 1) + " / " + String(datasets.length)
+        : "No layers";
+      browseIndicatorDetail.textContent = currentDataset
+        ? currentDataset.name || currentDataset.dataset_id
+        : "No dataset available";
+      if (browseFirstButton){
+        browseFirstButton.disabled = !hasDatasets || normalizedIndex <= 0;
+      }
+      if (browsePrevButton){
+        browsePrevButton.disabled = !hasDatasets || normalizedIndex <= 0;
+      }
+      if (browseNextButton){
+        browseNextButton.disabled = !hasDatasets || normalizedIndex >= datasets.length - 1;
+      }
+      if (browseLastButton){
+        browseLastButton.disabled = !hasDatasets || normalizedIndex >= datasets.length - 1;
+      }
+      if (browseExtentButton){
+        browseExtentButton.disabled = !currentDataset || !hasUsableBounds(currentDataset.bbox);
+      }
+      if (browseModeButton){
+        browseModeButton.classList.toggle("active", mapMode === "browse");
+      }
+      if (visibleModeButton){
+        visibleModeButton.classList.toggle("active", mapMode === "visible");
+      }
+    }
+
+    function ensureLayerBrowser(){
+      if (layerBrowser || !mapHost){
+        return;
+      }
+      layerBrowser = document.createElement("div");
+      layerBrowser.className = "layer-browser";
+
+      const modeButtons = document.createElement("div");
+      modeButtons.className = "mode-buttons";
+      browseModeButton = createBrowserButton("Browse", function(){
+        setMapMode("browse");
+      });
+      visibleModeButton = createBrowserButton("Visible", function(){
+        setMapMode("visible");
+      });
+      modeButtons.appendChild(browseModeButton);
+      modeButtons.appendChild(visibleModeButton);
+      layerBrowser.appendChild(modeButtons);
+
+      const navButtons = document.createElement("div");
+      navButtons.className = "nav-buttons";
+      browseFirstButton = createBrowserButton("|<", function(){
+        browseJump("first");
+      });
+      browsePrevButton = createBrowserButton("<", function(){
+        browseJump("prev");
+      });
+      const indicator = document.createElement("div");
+      indicator.className = "indicator";
+      browseIndicatorTitle = document.createElement("strong");
+      browseIndicatorDetail = document.createElement("span");
+      indicator.appendChild(browseIndicatorTitle);
+      indicator.appendChild(browseIndicatorDetail);
+      browseNextButton = createBrowserButton(">", function(){
+        browseJump("next");
+      });
+      browseLastButton = createBrowserButton(">|", function(){
+        browseJump("last");
+      });
+      browseExtentButton = createBrowserButton("Extent", function(){
+        zoomToCurrentLayerExtent();
+      });
+      navButtons.appendChild(browseFirstButton);
+      navButtons.appendChild(browsePrevButton);
+      navButtons.appendChild(indicator);
+      navButtons.appendChild(browseExtentButton);
+      navButtons.appendChild(browseNextButton);
+      navButtons.appendChild(browseLastButton);
+      layerBrowser.appendChild(navButtons);
+
+      mapHost.appendChild(layerBrowser);
+      updateLayerBrowser(lastKnownState.datasets || []);
+    }
+
+    function createBrowserButton(label, onClick){
+      const button = document.createElement("button");
+      button.type = "button";
+      button.textContent = label;
+      button.addEventListener("click", function(event){
+        event.preventDefault();
+        event.stopPropagation();
+        onClick();
+      });
+      return button;
+    }
+
+    function setMapMode(mode){
+      if (mapMode === mode){
+        return;
+      }
+      mapMode = mode;
+      updateLayerBrowser(lastKnownState.datasets || []);
+      reloadState();
+    }
+
+    function browseJump(direction){
+      const datasets = lastKnownState.datasets || [];
+      if (!datasets.length){
+        return;
+      }
+      let index = datasets.findIndex(function(dataset){
+        return dataset.dataset_id === browseDatasetId;
+      });
+      if (index < 0){
+        index = 0;
+      }
+      if (direction === "first"){
+        index = 0;
+      } else if (direction === "prev"){
+        index = Math.max(0, index - 1);
+      } else if (direction === "next"){
+        index = Math.min(datasets.length - 1, index + 1);
+      } else if (direction === "last"){
+        index = datasets.length - 1;
+      }
+      browseDatasetId = datasets[index].dataset_id;
+      updateLayerBrowser(datasets);
+      reloadState();
+    }
+
+    function yieldToUi(){
+      return new Promise(function(resolve){
+        window.setTimeout(resolve, 0);
+      });
+    }
+
+    function removeLeafletLayer(datasetId){
+      const record = datasetLayers[datasetId];
+      if (!record){
+        return;
+      }
+      if (map && record.layer && map.hasLayer(record.layer)){
+        map.removeLayer(record.layer);
+      }
+      delete datasetLayers[datasetId];
+    }
+
+    function rebuildLayerControl(visibleLayers){
+      if (!map){
+        return;
+      }
+      if (layerControl){
+        map.removeControl(layerControl);
+      }
+      const overlays = {};
+      for (const entry of visibleLayers){
+        const record = datasetLayers[entry.dataset.dataset_id];
+        if (record){
+          overlays[entry.dataset.name] = record.layer;
+        }
+      }
+      layerControl = L.control.layers({"OSM": osmBase, "Blank": blankBase}, overlays, {collapsed: false}).addTo(map);
+    }
+
+    function datasetMetaToken(dataset){
+      return [
+        dataset.name || "",
+        dataset.description || "",
+        JSON.stringify(dataset.style || {}),
+        dataset.source_url || "",
+        dataset.geometry_category || ""
+      ].join("|");
+    }
+
+    function buildLeafletLayer(dataset, geojson){
+      const polygonStyle = polygonStyleForDataset(dataset);
+      const lineStyle = lineStyleForDataset(dataset);
+      const pointStyle = pointStyleForDataset(dataset);
+      return L.geoJSON(geojson, {
+        style: function(feature){
+          const geometryType = feature && feature.geometry ? feature.geometry.type : "";
+          if (isPolygonType(geometryType) || dataset.geometry_category === "polygon"){
+            return polygonStyle;
+          }
+          if (isLineType(geometryType) || dataset.geometry_category === "line"){
+            return lineStyle;
+          }
+          return lineStyle;
+        },
+        pointToLayer: function(_feature, latlng){
+          return L.circleMarker(latlng, pointStyle);
+        },
+        onEachFeature: function(feature, layerRef){
+          layerRef.bindPopup(buildPopupHtml(dataset, feature.properties || {}));
+        }
+      });
+    }
+
+    function renderOfflineState(state, visibleLayers){
+      if (!offlineSvg || !offlineViewportGroup){
+        return;
+      }
+      hideOfflinePopup();
+      while (offlineViewportGroup.firstChild){
+        offlineViewportGroup.removeChild(offlineViewportGroup.firstChild);
+      }
+      const bounds = preferredDisplayBounds(state, visibleLayers);
+      offlineBaseBounds = bounds;
+      if (!offlineViewInitialized){
+        resetOfflineView();
+        offlineViewInitialized = true;
+      }
+      const canvasSize = updateOfflineSvgViewport();
+      const projector = createProjector(bounds, canvasSize.width, canvasSize.height, offlineCanvasPadding(canvasSize));
+      for (const entry of visibleLayers){
+        drawOfflineLayer(entry.dataset, entry.geojson, projector);
+      }
+      applyOfflineViewTransform();
+    }
+
+    function preferredInitialBounds(state, datasets){
+      const currentDataset = currentBrowseDataset(datasets || []);
+      if (mapMode === "browse" && currentDataset && hasUsableBounds(currentDataset.bbox)){
+        return normalizedBounds(currentDataset.bbox);
+      }
+      if (state && Array.isArray(state.bounds) && state.bounds.length === 4){
+        return normalizedBounds(state.bounds);
+      }
+      if (datasets && datasets.length){
+        return normalizedBounds(deriveBounds(datasets.map(function(dataset){
+          return {dataset: dataset};
+        })));
+      }
+      return null;
+    }
+
+    function preferredDisplayBounds(state, visibleLayers){
+      if (mapMode === "browse" && visibleLayers && visibleLayers.length){
+        return normalizedBounds(deriveBounds(visibleLayers));
+      }
+      if (state && Array.isArray(state.bounds) && state.bounds.length === 4){
+        return normalizedBounds(state.bounds);
+      }
+      return normalizedBounds(deriveBounds(visibleLayers));
+    }
+
+    function normalizedBounds(bounds){
+      let minx = Array.isArray(bounds) ? Number(bounds[0]) : 0;
+      let miny = Array.isArray(bounds) ? Number(bounds[1]) : 0;
+      let maxx = Array.isArray(bounds) ? Number(bounds[2]) : 1;
+      let maxy = Array.isArray(bounds) ? Number(bounds[3]) : 1;
+      if (!isFinite(minx) || !isFinite(miny) || !isFinite(maxx) || !isFinite(maxy)){
+        return [-180, -90, 180, 90];
+      }
+      if (minx === maxx){
+        minx -= 0.5;
+        maxx += 0.5;
+      }
+      if (miny === maxy){
+        miny -= 0.5;
+        maxy += 0.5;
+      }
+      return [minx, miny, maxx, maxy];
+    }
+
+    function deriveBounds(visibleLayers){
+      let minx = Infinity;
+      let miny = Infinity;
+      let maxx = -Infinity;
+      let maxy = -Infinity;
+      for (const entry of visibleLayers){
+        const bbox = entry.dataset && Array.isArray(entry.dataset.bbox) ? entry.dataset.bbox : null;
+        if (!bbox || bbox.length !== 4){
+          continue;
+        }
+        minx = Math.min(minx, Number(bbox[0]));
+        miny = Math.min(miny, Number(bbox[1]));
+        maxx = Math.max(maxx, Number(bbox[2]));
+        maxy = Math.max(maxy, Number(bbox[3]));
+      }
+      if (!isFinite(minx)){
+        return [-180, -90, 180, 90];
+      }
+      return [minx, miny, maxx, maxy];
+    }
+
+    function createProjector(bounds, width, height, padding){
+      const minx = bounds[0];
+      const miny = bounds[1];
+      const maxx = bounds[2];
+      const maxy = bounds[3];
+      const spanX = Math.max(maxx - minx, 1e-9);
+      const spanY = Math.max(maxy - miny, 1e-9);
+      const scaleX = (width - padding * 2) / spanX;
+      const scaleY = (height - padding * 2) / spanY;
+      const scale = Math.min(scaleX, scaleY);
+      const offsetX = (width - spanX * scale) / 2;
+      const offsetY = (height - spanY * scale) / 2;
+      return function(point){
+        const x = offsetX + (Number(point[0]) - minx) * scale;
+        const y = height - (offsetY + (Number(point[1]) - miny) * scale);
+        return [roundCoord(x), roundCoord(y)];
+      };
+    }
+
+    function currentMapCanvasSize(){
+      const width = Math.max((mapHost && mapHost.clientWidth) || 0, DEFAULT_OFFLINE_CANVAS_WIDTH);
+      const height = Math.max((mapHost && mapHost.clientHeight) || 0, DEFAULT_OFFLINE_CANVAS_HEIGHT);
+      return {width: width, height: height};
+    }
+
+    function updateOfflineSvgViewport(){
+      const canvasSize = currentMapCanvasSize();
+      if (offlineSvg){
+        offlineSvg.setAttribute("viewBox", "0 0 " + canvasSize.width + " " + canvasSize.height);
+      }
+      return canvasSize;
+    }
+
+    function offlineCanvasPadding(canvasSize){
+      return Math.max(24, Math.round(Math.min(canvasSize.width, canvasSize.height) * 0.04));
+    }
+
+    function drawOfflineLayer(dataset, geojson, projector){
+      const features = geojson && Array.isArray(geojson.features) ? geojson.features : [];
+      const layerGroup = document.createElementNS(SVG_NS, "g");
+      layerGroup.setAttribute("data-dataset-id", dataset.dataset_id || "");
+      for (const feature of features){
+        drawOfflineFeature(layerGroup, dataset, feature, projector);
+      }
+      offlineViewportGroup.appendChild(layerGroup);
+    }
+
+    function drawOfflineFeature(layerGroup, dataset, feature, projector){
+      const geometry = feature ? feature.geometry : null;
+      if (!geometry){
+        return;
+      }
+      const popupHtml = buildPopupHtml(dataset, feature.properties || {});
+      const color = dataset.color || "#22577a";
+      const type = geometry.type;
+      const style = offlineStyleForDataset(dataset, type);
+      if (type === "Point"){
+        appendPoint(layerGroup, projector(geometry.coordinates), style, popupHtml);
+        return;
+      }
+      if (type === "MultiPoint"){
+        for (const coords of geometry.coordinates || []){
+          appendPoint(layerGroup, projector(coords), style, popupHtml);
+        }
+        return;
+      }
+      const pathData = geometryToPath(geometry, projector);
+      if (!pathData){
+        return;
+      }
+      const path = document.createElementNS(SVG_NS, "path");
+      path.setAttribute("d", pathData);
+      path.setAttribute("stroke", style.stroke);
+      path.setAttribute("stroke-width", String(style.strokeWidth));
+      path.setAttribute("stroke-linejoin", "round");
+      path.setAttribute("stroke-linecap", "round");
+      path.setAttribute("fill", style.fill);
+      path.addEventListener("click", function(event){
+        showOfflinePopup(event, popupHtml);
+      });
+      layerGroup.appendChild(path);
+    }
+
+    function appendPoint(layerGroup, point, style, popupHtml){
+      const marker = document.createElementNS(SVG_NS, "circle");
+      marker.setAttribute("cx", point[0]);
+      marker.setAttribute("cy", point[1]);
+      marker.setAttribute("r", String(style.radius));
+      marker.setAttribute("fill", style.fillColor);
+      marker.setAttribute("fill-opacity", String(style.fillOpacity));
+      marker.setAttribute("stroke", style.stroke);
+      marker.setAttribute("stroke-width", String(style.strokeWidth));
+      marker.addEventListener("click", function(event){
+        showOfflinePopup(event, popupHtml);
+      });
+      layerGroup.appendChild(marker);
+    }
+
+    function geometryToPath(geometry, projector){
+      if (!geometry){
+        return "";
+      }
+      if (geometry.type === "LineString"){
+        return lineStringToPath(geometry.coordinates || [], projector, false);
+      }
+      if (geometry.type === "MultiLineString"){
+        return (geometry.coordinates || []).map(function(coords){
+          return lineStringToPath(coords, projector, false);
+        }).join(" ");
+      }
+      if (geometry.type === "Polygon"){
+        return polygonToPath(geometry.coordinates || [], projector);
+      }
+      if (geometry.type === "MultiPolygon"){
+        return (geometry.coordinates || []).map(function(rings){
+          return polygonToPath(rings, projector);
+        }).join(" ");
+      }
+      if (geometry.type === "GeometryCollection"){
+        return (geometry.geometries || []).map(function(part){
+          return geometryToPath(part, projector);
+        }).join(" ");
+      }
+      return "";
+    }
+
+    function lineStringToPath(coords, projector, closed){
+      if (!Array.isArray(coords) || coords.length === 0){
+        return "";
+      }
+      const projected = coords.map(projector);
+      let path = "M " + projected[0][0] + " " + projected[0][1];
+      for (let index = 1; index < projected.length; index += 1){
+        path += " L " + projected[index][0] + " " + projected[index][1];
+      }
+      if (closed){
+        path += " Z";
+      }
+      return path;
+    }
+
+    function polygonToPath(rings, projector){
+      if (!Array.isArray(rings) || rings.length === 0){
+        return "";
+      }
+      return rings.map(function(ring){
+        return lineStringToPath(ring, projector, true);
+      }).join(" ");
+    }
+
+    function isAreaGeometry(type){
+      return type === "Polygon" || type === "MultiPolygon";
+    }
+
+    function isLineGeometry(type){
+      return type === "LineString" || type === "MultiLineString";
+    }
+
+    function isPolygonType(type){
+      return type === "Polygon" || type === "MultiPolygon";
+    }
+
+    function isLineType(type){
+      return type === "LineString" || type === "MultiLineString";
+    }
+
+    function compareDatasetRenderOrder(a, b){
+      const rankA = geometryRank(a.geometry_category || "");
+      const rankB = geometryRank(b.geometry_category || "");
+      if (rankA !== rankB){
+        return rankA - rankB;
+      }
+      return Number(a.sort_order || 0) - Number(b.sort_order || 0);
+    }
+
+    function geometryRank(category){
+      if (category === "polygon"){
+        return 0;
+      }
+      if (category === "line"){
+        return 1;
+      }
+      if (category === "point"){
+        return 2;
+      }
+      return 3;
+    }
+
+    function polygonStyleForDataset(dataset){
+      const style = dataset.style || {};
+      const stroke = style.stroke_color || dataset.color || "#22577a";
+      const fill = style.fill_color || stroke;
+      return {
+        color: stroke,
+        weight: Number(style.stroke_width || 1.35),
+        opacity: Number(style.line_opacity || 0.92),
+        fillColor: fill,
+        fillOpacity: Number(style.fill_opacity || 0.24)
+      };
+    }
+
+    function lineStyleForDataset(dataset){
+      const style = dataset.style || {};
+      const stroke = style.stroke_color || dataset.color || "#22577a";
+      return {
+        color: stroke,
+        weight: Number(style.stroke_width || 2.6),
+        opacity: Number(style.line_opacity || 0.96),
+        fillOpacity: 0
+      };
+    }
+
+    function pointStyleForDataset(dataset){
+      const style = dataset.style || {};
+      const fill = style.fill_color || dataset.color || "#22577a";
+      return {
+        radius: Number(style.point_radius || 6),
+        color: style.point_stroke_color || "#ffffff",
+        weight: Number(style.point_stroke_width || 1.2),
+        fillColor: fill,
+        fillOpacity: Number(style.point_fill_opacity || 0.9)
+      };
+    }
+
+    function offlineStyleForDataset(dataset, geometryType){
+      const style = dataset.style || {};
+      if (isPolygonType(geometryType) || dataset.geometry_category === "polygon"){
+        return {
+          stroke: style.stroke_color || dataset.color || "#22577a",
+          strokeWidth: Number(style.stroke_width || 1.35),
+          fill: hexToRgba(style.fill_color || dataset.color || "#22577a", Number(style.fill_opacity || 0.24)),
+          radius: 0,
+          fillColor: style.fill_color || dataset.color || "#22577a",
+          fillOpacity: Number(style.fill_opacity || 0.24)
+        };
+      }
+      if (isLineType(geometryType) || dataset.geometry_category === "line"){
+        return {
+          stroke: style.stroke_color || dataset.color || "#22577a",
+          strokeWidth: Number(style.stroke_width || 2.6),
+          fill: "none",
+          radius: 0,
+          fillColor: style.fill_color || dataset.color || "#22577a",
+          fillOpacity: 0
+        };
+      }
+      return {
+        stroke: style.point_stroke_color || "#ffffff",
+        strokeWidth: Number(style.point_stroke_width || 1.2),
+        fill: "none",
+        radius: Number(style.point_radius || 6),
+        fillColor: style.fill_color || dataset.color || "#22577a",
+        fillOpacity: Number(style.point_fill_opacity || 0.9)
+      };
+    }
+
+    function buildPopupHtml(dataset, properties){
+      const lines = [];
+      lines.push("<strong>" + escapeHtml(dataset.name || "Dataset") + "</strong>");
+      if (dataset.description){
+        lines.push(escapeHtml(dataset.description));
+      }
+      const keys = Object.keys(properties || {}).slice(0, 8);
+      for (const key of keys){
+        lines.push("<div><b>" + escapeHtml(key) + ":</b> " + escapeHtml(String(properties[key])) + "</div>");
+      }
+      if (dataset.source_url){
+        const url = escapeHtml(dataset.source_url);
+        lines.push('<div><a href="' + url + '">' + url + "</a></div>");
+      }
+      return lines.join("");
+    }
+
+    function showOfflinePopup(event, html){
+      if (!offlinePopup || !mapHost){
+        return;
+      }
+      const bounds = mapHost.getBoundingClientRect();
+      offlinePopup.innerHTML = html;
+      const left = Math.max(16, Math.min(bounds.width - 340, event.clientX - bounds.left + 14));
+      const top = Math.max(16, Math.min(bounds.height - 220, event.clientY - bounds.top + 14));
+      offlinePopup.style.left = left + "px";
+      offlinePopup.style.top = top + "px";
+      offlinePopup.style.display = "block";
+      event.stopPropagation();
+    }
+
+    function hideOfflinePopup(){
+      if (offlinePopup){
+        offlinePopup.style.display = "none";
+      }
+    }
+
+    function hexToRgba(hex, alpha){
+      const value = String(hex || "").replace("#", "");
+      if (value.length !== 6){
+        return "rgba(34, 87, 122, " + alpha + ")";
+      }
+      const red = parseInt(value.slice(0, 2), 16);
+      const green = parseInt(value.slice(2, 4), 16);
+      const blue = parseInt(value.slice(4, 6), 16);
+      return "rgba(" + red + ", " + green + ", " + blue + ", " + alpha + ")";
+    }
+
+    function roundCoord(value){
+      return Math.round(Number(value) * 100) / 100;
+    }
+
+    function escapeHtml(value){
+      return String(value)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/\"/g, "&quot;");
+    }
+
+    function ensureMapControls(){
+      if (mapControls || !mapHost){
+        return;
+      }
+      mapControls = document.createElement("div");
+      mapControls.className = "map-controls";
+      mapControls.appendChild(createMapControlButton("+", function(){ zoomInAction(); }));
+      mapControls.appendChild(createMapControlButton("-", function(){ zoomOutAction(); }));
+      mapControls.appendChild(createMapControlButton("Full Extent", function(){ zoomToFullExtent(); }));
+      mapHost.appendChild(mapControls);
+    }
+
+    function createMapControlButton(label, onClick){
+      const button = document.createElement("button");
+      button.type = "button";
+      button.textContent = label;
+      button.addEventListener("click", function(event){
+        event.preventDefault();
+        event.stopPropagation();
+        onClick();
+      });
+      return button;
+    }
+
+    function zoomInAction(){
+      if (rendererMode === "leaflet" && map){
+        map.zoomIn();
+        return;
+      }
+      if (rendererMode === "offline"){
+        const canvasSize = currentMapCanvasSize();
+        zoomOfflineAt([canvasSize.width / 2, canvasSize.height / 2], 1.35);
+      }
+    }
+
+    function zoomOutAction(){
+      if (rendererMode === "leaflet" && map){
+        map.zoomOut();
+        return;
+      }
+      if (rendererMode === "offline"){
+        const canvasSize = currentMapCanvasSize();
+        zoomOfflineAt([canvasSize.width / 2, canvasSize.height / 2], 1 / 1.35);
+      }
+    }
+
+    function zoomToFullExtent(){
+      if (rendererMode === "leaflet" && map){
+        if (hasUsableBounds(lastStateBounds)){
+          fitLeafletBounds(normalizedBounds(lastStateBounds));
+        } else {
+          map.setView([63.43, 10.39], 4);
+        }
+        return;
+      }
+      if (rendererMode === "offline"){
+        resetOfflineView();
+        applyOfflineViewTransform();
+      }
+    }
+
+    function zoomToCurrentLayerExtent(){
+      const dataset = currentBrowseDataset(lastKnownState.datasets || []);
+      if (!dataset || !hasUsableBounds(dataset.bbox)){
+        return;
+      }
+      const bbox = normalizedBounds(dataset.bbox);
+      if (rendererMode === "leaflet" && map){
+        fitLeafletBounds(bbox);
+        return;
+      }
+      if (rendererMode === "offline"){
+        fitOfflineBounds(bbox);
+      }
+    }
+
+    function fitLeafletBounds(bbox){
+      if (!map || !hasUsableBounds(bbox)){
+        return;
+      }
+      map.fitBounds([[bbox[1], bbox[0]], [bbox[3], bbox[2]]], {padding: [16, 16]});
+    }
+
+    function resetOfflineView(){
+      offlineView.scale = 1;
+      offlineView.translateX = 0;
+      offlineView.translateY = 0;
+    }
+
+    function applyOfflineViewTransform(){
+      if (!offlineViewportGroup){
+        return;
+      }
+      offlineViewportGroup.setAttribute(
+        "transform",
+        "translate(" + roundCoord(offlineView.translateX) + " " + roundCoord(offlineView.translateY) + ") scale(" + roundCoord(offlineView.scale) + ")"
+      );
+    }
+
+    function clampOfflineScale(value){
+      return Math.max(offlineView.minScale, Math.min(offlineView.maxScale, value));
+    }
+
+    function svgPointFromClient(clientX, clientY){
+      const canvasSize = currentMapCanvasSize();
+      if (!mapHost){
+        return [canvasSize.width / 2, canvasSize.height / 2];
+      }
+      const rect = mapHost.getBoundingClientRect();
+      const x = ((clientX - rect.left) / Math.max(rect.width, 1)) * canvasSize.width;
+      const y = ((clientY - rect.top) / Math.max(rect.height, 1)) * canvasSize.height;
+      return [x, y];
+    }
+
+    function fitOfflineBounds(bounds){
+      if (!offlineBaseBounds){
+        resetOfflineView();
+        applyOfflineViewTransform();
+        return;
+      }
+      const canvasSize = updateOfflineSvgViewport();
+      const padding = offlineCanvasPadding(canvasSize);
+      const projector = createProjector(offlineBaseBounds, canvasSize.width, canvasSize.height, padding);
+      const topLeft = projector([bounds[0], bounds[3]]);
+      const bottomRight = projector([bounds[2], bounds[1]]);
+      const minx = Math.min(topLeft[0], bottomRight[0]);
+      const maxx = Math.max(topLeft[0], bottomRight[0]);
+      const miny = Math.min(topLeft[1], bottomRight[1]);
+      const maxy = Math.max(topLeft[1], bottomRight[1]);
+      const targetWidth = Math.max(maxx - minx, 1e-6);
+      const targetHeight = Math.max(maxy - miny, 1e-6);
+      const scale = clampOfflineScale(
+        Math.min(
+          (canvasSize.width - padding * 2) / targetWidth,
+          (canvasSize.height - padding * 2) / targetHeight
+        )
+      );
+      offlineView.scale = scale;
+      offlineView.translateX = canvasSize.width / 2 - ((minx + maxx) / 2) * scale;
+      offlineView.translateY = canvasSize.height / 2 - ((miny + maxy) / 2) * scale;
+      applyOfflineViewTransform();
+    }
+
+    function hasUsableBounds(bounds){
+      return Array.isArray(bounds) && bounds.length === 4 && bounds.every(function(value){
+        return isFinite(Number(value));
+      });
+    }
+
+    function zoomOfflineAt(anchor, factor){
+      const newScale = clampOfflineScale(offlineView.scale * factor);
+      setOfflineScaleAt(anchor, newScale);
+    }
+
+    function setOfflineScaleAt(anchor, newScale){
+      const oldScale = offlineView.scale;
+      if (!isFinite(newScale) || newScale <= 0 || oldScale === newScale){
+        return;
+      }
+      const anchorX = Number(anchor[0]);
+      const anchorY = Number(anchor[1]);
+      const worldX = (anchorX - offlineView.translateX) / oldScale;
+      const worldY = (anchorY - offlineView.translateY) / oldScale;
+      offlineView.scale = newScale;
+      offlineView.translateX = anchorX - worldX * newScale;
+      offlineView.translateY = anchorY - worldY * newScale;
+      applyOfflineViewTransform();
+    }
+
+    function handleOfflineWheel(event){
+      if (rendererMode !== "offline" || !offlineSvg){
+        return;
+      }
+      event.preventDefault();
+      hideOfflinePopup();
+      const anchor = svgPointFromClient(event.clientX, event.clientY);
+      const factor = event.deltaY < 0 ? 1.18 : 1 / 1.18;
+      zoomOfflineAt(anchor, factor);
+    }
+
+    function handleOfflineDoubleClick(event){
+      if (rendererMode !== "offline" || !offlineSvg){
+        return;
+      }
+      event.preventDefault();
+      const anchor = svgPointFromClient(event.clientX, event.clientY);
+      zoomOfflineAt(anchor, 1.5);
+    }
+
+    function handleOfflinePointerDown(event){
+      if (rendererMode !== "offline" || !offlineSvg || !mapHost){
+        return;
+      }
+      hideOfflinePopup();
+      mapHost.classList.add("offline-dragging");
+      if (mapHost.setPointerCapture){
+        try {
+          mapHost.setPointerCapture(event.pointerId);
+        } catch (_error) {}
+      }
+      offlinePointers.set(event.pointerId, {clientX: event.clientX, clientY: event.clientY});
+      if (offlinePointers.size === 1){
+        const startPoint = svgPointFromClient(event.clientX, event.clientY);
+        offlineGesture = {
+          type: "pan",
+          startPoint: startPoint,
+          startTranslateX: offlineView.translateX,
+          startTranslateY: offlineView.translateY
+        };
+      } else if (offlinePointers.size >= 2){
+        offlineGesture = buildOfflinePinchGesture();
+      }
+      event.preventDefault();
+    }
+
+    function handleOfflinePointerMove(event){
+      if (rendererMode !== "offline" || !offlineSvg){
+        return;
+      }
+      if (!offlinePointers.has(event.pointerId)){
+        return;
+      }
+      offlinePointers.set(event.pointerId, {clientX: event.clientX, clientY: event.clientY});
+      if (!offlineGesture){
+        return;
+      }
+      if (offlineGesture.type === "pan" && offlinePointers.size === 1){
+        const current = svgPointFromClient(event.clientX, event.clientY);
+        offlineView.translateX = offlineGesture.startTranslateX + (current[0] - offlineGesture.startPoint[0]);
+        offlineView.translateY = offlineGesture.startTranslateY + (current[1] - offlineGesture.startPoint[1]);
+        applyOfflineViewTransform();
+      } else if (offlineGesture.type === "pinch" && offlinePointers.size >= 2){
+        const pinch = currentOfflinePinchState();
+        if (!pinch){
+          return;
+        }
+        const newScale = clampOfflineScale(offlineGesture.startScale * (pinch.distance / Math.max(offlineGesture.startDistance, 1e-6)));
+        offlineView.scale = newScale;
+        offlineView.translateX = pinch.midpoint[0] - offlineGesture.worldMidpoint[0] * newScale;
+        offlineView.translateY = pinch.midpoint[1] - offlineGesture.worldMidpoint[1] * newScale;
+        applyOfflineViewTransform();
+      }
+      event.preventDefault();
+    }
+
+    function handleOfflinePointerUp(event){
+      if (rendererMode !== "offline" || !mapHost){
+        return;
+      }
+      if (offlinePointers.has(event.pointerId)){
+        offlinePointers.delete(event.pointerId);
+      }
+      if (mapHost.releasePointerCapture){
+        try {
+          mapHost.releasePointerCapture(event.pointerId);
+        } catch (_error) {}
+      }
+      if (offlinePointers.size === 0){
+        offlineGesture = null;
+        mapHost.classList.remove("offline-dragging");
+      } else if (offlinePointers.size === 1){
+        const remaining = Array.from(offlinePointers.values())[0];
+        const startPoint = svgPointFromClient(remaining.clientX, remaining.clientY);
+        offlineGesture = {
+          type: "pan",
+          startPoint: startPoint,
+          startTranslateX: offlineView.translateX,
+          startTranslateY: offlineView.translateY
+        };
+        mapHost.classList.add("offline-dragging");
+      } else {
+        offlineGesture = buildOfflinePinchGesture();
+      }
+    }
+
+    function buildOfflinePinchGesture(){
+      const pinch = currentOfflinePinchState();
+      if (!pinch){
+        return null;
+      }
+      return {
+        type: "pinch",
+        startScale: offlineView.scale,
+        startDistance: pinch.distance,
+        worldMidpoint: [
+          (pinch.midpoint[0] - offlineView.translateX) / offlineView.scale,
+          (pinch.midpoint[1] - offlineView.translateY) / offlineView.scale
+        ]
+      };
+    }
+
+    function currentOfflinePinchState(){
+      if (offlinePointers.size < 2){
+        return null;
+      }
+      const points = Array.from(offlinePointers.values()).slice(0, 2);
+      const a = svgPointFromClient(points[0].clientX, points[0].clientY);
+      const b = svgPointFromClient(points[1].clientX, points[1].clientY);
+      const dx = b[0] - a[0];
+      const dy = b[1] - a[1];
+      return {
+        midpoint: [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2],
+        distance: Math.sqrt(dx * dx + dy * dy)
+      };
+    }
+
+    function handleViewportResize(){
+      if (rendererMode === "leaflet" && map){
+        map.invalidateSize(false);
+        return;
+      }
+      if (rendererMode === "offline"){
+        updateOfflineSvgViewport();
+        if (resizeReloadTimer){
+          window.clearTimeout(resizeReloadTimer);
+        }
+        resizeReloadTimer = window.setTimeout(function(){
+          resizeReloadTimer = null;
+          reloadState();
+        }, 90);
+      }
+    }
+
+    window.addEventListener("resize", handleViewportResize);
+
+    new QWebChannel(qt.webChannelTransport, function(channel){
+      bridge = channel.objects.mapBridge;
+      if (bridge && bridge.stateChanged){
+        bridge.stateChanged.connect(function(){
+          reloadState();
+        });
+      }
+      reloadState();
+    });
+  </script>
+</body>
+</html>

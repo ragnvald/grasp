@@ -1,0 +1,34 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+
+# Virtual environments
+.venv/
+venv/
+
+# Editors / OS
+.vscode/
+.idea/
+Thumbs.db
+.DS_Store
+
+# Local application outputs
+data_out/
+data/
+artifacts/
+
+# Test and runtime leftovers
+*.log
+*.sqlite
+*.sqlite3
+*.db
+
+# PyInstaller / build
+build/
+dist/
+

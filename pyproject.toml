@@ -1,0 +1,40 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "grasp-desktop"
+version = "0.1.0"
+description = "GRASP desktop application for GIS dataset retrieval, analysis, styling, and packaging."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "geopandas>=1.0",
+    "pandas>=2.1",
+    "pyarrow>=17.0",
+    "shapely>=2.0",
+    "fiona>=1.9",
+    "requests>=2.32",
+    "PySide6>=6.7",
+]
+
+[project.optional-dependencies]
+build = [
+    "pyinstaller>=6.11",
+]
+dev = [
+    "pytest>=8.0",
+]
+
+[project.scripts]
+grasp = "grasp.app:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+grasp = ["ui/assets/*.html"]
+
