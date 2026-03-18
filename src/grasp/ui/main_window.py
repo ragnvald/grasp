@@ -711,11 +711,14 @@ class MainWindow(QMainWindow):
         worker.signals.progress.connect(self.import_progress.setValue)
         worker.signals.status.connect(lambda message, token=progress_token: self._update_background_activity_status(token, message))
         worker.signals.progress.connect(lambda value, token=progress_token: self._update_background_activity_progress(token, value))
-        worker.signals.result.connect(self.on_scan_result)
+        worker.signals.result.connect(self._schedule_scan_result)
         worker.signals.error.connect(lambda message, token=progress_token: self.on_background_error(message, token))
         worker.signals.finished.connect(lambda token=progress_token: self._finish_background_activity(token, "Scan finished."))
         worker.signals.finished.connect(lambda: self.statusBar().showMessage("Scan finished.", 5000))
         self.thread_pool.start(worker)
+
+    def _schedule_scan_result(self, datasets) -> None:
+        QTimer.singleShot(0, lambda datasets=datasets: self.on_scan_result(datasets))
 
     def on_scan_result(self, datasets) -> None:
         if self.repository is None:
@@ -1318,9 +1321,14 @@ class MainWindow(QMainWindow):
         groups = dict(self.repository.list_groups())
         if progress_callback:
             progress_callback(0)
+        processed = 0
+        skipped_missing = 0
         for index, dataset_id in enumerate(dataset_ids, start=1):
             dataset = self.repository.get_dataset(dataset_id)
             if dataset is None:
+                skipped_missing += 1
+                if status_callback:
+                    status_callback(f"Skipping missing dataset {index}/{total}: {dataset_id}")
                 continue
             if status_callback:
                 status_callback(f"Styling {index}/{total}: {dataset.preferred_name}")
@@ -1329,9 +1337,17 @@ class MainWindow(QMainWindow):
                 group_name=groups.get(dataset.group_id, dataset.group_id),
             )
             self.repository.upsert_style(dataset_id, style)
+            processed += 1
             if progress_callback:
-                progress_callback(int((index / max(total, 1)) * 100))
-        return total
+                progress_callback(int((processed / max(total, 1)) * 100))
+        if progress_callback and total:
+            progress_callback(100)
+        if status_callback:
+            summary = f"Styled {processed}/{total} dataset(s)."
+            if skipped_missing:
+                summary += f" Skipped {skipped_missing} missing dataset(s)."
+            status_callback(summary)
+        return processed
 
     def refresh_all_views(self) -> None:
         self.refresh_import_table()
@@ -1649,12 +1665,12 @@ class MainWindow(QMainWindow):
             worker.signals.status.connect(self.review_job_status.setText)
             worker.signals.progress.connect(self.review_progress.setValue)
         worker.signals.error.connect(lambda message, token=progress_token: self.on_background_error(message, token))
-        if refresh_after:
-            worker.signals.result.connect(lambda _value, activity=log_activity: self._refresh_all_views_after_worker(activity))
         worker.signals.finished.connect(lambda token=progress_token, message=success_message: self._finish_background_activity(token, message))
         worker.signals.finished.connect(lambda: self.statusBar().showMessage(success_message, 5000))
         if track_review_job:
             worker.signals.finished.connect(lambda: self._on_review_job_finished(success_message))
+        if refresh_after:
+            worker.signals.result.connect(lambda _value, activity=log_activity: self._schedule_refresh_all_views_after_worker(activity))
         self.thread_pool.start(worker)
 
     def _heuristic_classify_dataset_ids(self, dataset_ids: list[str], *, status_callback=None, progress_callback=None) -> int:
@@ -1710,6 +1726,8 @@ class MainWindow(QMainWindow):
                     break
             dataset = self.repository.get_dataset(dataset_id)
             if dataset is None:
+                if status_callback:
+                    status_callback(f"Skipping missing dataset {index}/{total}: {dataset_id}")
                 continue
             if status_callback:
                 status_callback(f"{status_prefix} {index}/{total}: {dataset.preferred_name}")
@@ -1734,9 +1752,14 @@ class MainWindow(QMainWindow):
         total = len(dataset_ids)
         if progress_callback:
             progress_callback(0)
+        processed = 0
+        skipped_missing = 0
         for index, dataset_id in enumerate(dataset_ids, start=1):
             dataset = self.repository.get_dataset(dataset_id)
             if dataset is None:
+                skipped_missing += 1
+                if status_callback:
+                    status_callback(f"Skipping missing dataset {index}/{total}: {dataset_id}")
                 continue
             if status_callback:
                 status_callback(f"AI + sources {index}/{total}: {dataset.preferred_name}")
@@ -1749,9 +1772,17 @@ class MainWindow(QMainWindow):
             if dataset.group_id in {"", "ungrouped"} and understanding.suggested_group:
                 self.repository.assign_group(dataset_id, understanding.suggested_group)
             self.repository.replace_sources(dataset_id, sources)
+            processed += 1
             if progress_callback:
-                progress_callback(int((index / max(total, 1)) * 100))
-        return total
+                progress_callback(int((processed / max(total, 1)) * 100))
+        if progress_callback and total:
+            progress_callback(100)
+        if status_callback:
+            summary = f"Completed AI + source enrichment for {processed}/{total} dataset(s)."
+            if skipped_missing:
+                summary += f" Skipped {skipped_missing} missing dataset(s)."
+            status_callback(summary)
+        return processed
 
     def _search_dataset_ids(self, dataset_ids: list[str], *, status_callback=None, progress_callback=None) -> int:
         if self.repository is None:
@@ -1759,9 +1790,14 @@ class MainWindow(QMainWindow):
         total = len(dataset_ids)
         if progress_callback:
             progress_callback(0)
+        processed = 0
+        skipped_missing = 0
         for index, dataset_id in enumerate(dataset_ids, start=1):
             dataset = self.repository.get_dataset(dataset_id)
             if dataset is None:
+                skipped_missing += 1
+                if status_callback:
+                    status_callback(f"Skipping missing dataset {index}/{total}: {dataset_id}")
                 continue
             understanding = self.repository.get_understanding(dataset_id)
             if not understanding.search_queries:
@@ -1775,9 +1811,17 @@ class MainWindow(QMainWindow):
                 understanding = enrich_from_sources(dataset, understanding, sources)
             self.repository.upsert_understanding(dataset_id, understanding)
             self.repository.replace_sources(dataset_id, sources)
+            processed += 1
             if progress_callback:
-                progress_callback(int((index / max(total, 1)) * 100))
-        return total
+                progress_callback(int((processed / max(total, 1)) * 100))
+        if progress_callback and total:
+            progress_callback(100)
+        if status_callback:
+            summary = f"Completed source lookup for {processed}/{total} dataset(s)."
+            if skipped_missing:
+                summary += f" Skipped {skipped_missing} missing dataset(s)."
+            status_callback(summary)
+        return processed
 
     def _regroup_dataset_ids(
         self,
@@ -1963,6 +2007,9 @@ class MainWindow(QMainWindow):
     def _refresh_all_views_after_worker(self, activity: str) -> None:
         self.append_activity_log("Applying results to the catalog and refreshing views.", activity=activity)
         self.refresh_all_views()
+
+    def _schedule_refresh_all_views_after_worker(self, activity: str) -> None:
+        QTimer.singleShot(0, lambda activity=activity: self._refresh_all_views_after_worker(activity))
 
     def _begin_background_activity(self, label: str, activity: str | None = None) -> int:
         self._background_progress_token += 1

@@ -411,6 +411,26 @@ class MainWindowTests(unittest.TestCase):
             finally:
                 window.close()
 
+    def test_scan_result_processing_is_scheduled_outside_worker_result_slot(self) -> None:
+        with patch("grasp.ui.main_window.WEBENGINE_AVAILABLE", False):
+            window = MainWindow()
+            try:
+                dataset = DatasetRecord(
+                    dataset_id="auto1",
+                    source_path="D:/data/auto1.geojson",
+                    source_format="geojson",
+                    cache_path="auto1.parquet",
+                )
+                with patch("grasp.ui.main_window.QTimer.singleShot") as single_shot:
+                    window._schedule_scan_result([dataset])
+
+                self.assertEqual(single_shot.call_count, 1)
+                delay_ms, scheduled_fn = single_shot.call_args.args
+                self.assertEqual(delay_ms, 0)
+                self.assertTrue(callable(scheduled_fn))
+            finally:
+                window.close()
+
     def test_initial_heuristic_classification_stops_after_one_minute_budget(self) -> None:
         with patch("grasp.ui.main_window.WEBENGINE_AVAILABLE", False):
             window = MainWindow()
@@ -452,6 +472,20 @@ class MainWindowTests(unittest.TestCase):
                             for message in messages
                         )
                     )
+            finally:
+                window.close()
+
+    def test_refresh_after_worker_is_scheduled_outside_finished_job(self) -> None:
+        with patch("grasp.ui.main_window.WEBENGINE_AVAILABLE", False):
+            window = MainWindow()
+            try:
+                with patch("grasp.ui.main_window.QTimer.singleShot") as single_shot:
+                    window._schedule_refresh_all_views_after_worker("Generate Styles")
+
+                self.assertEqual(single_shot.call_count, 1)
+                delay_ms, scheduled_fn = single_shot.call_args.args
+                self.assertEqual(delay_ms, 0)
+                self.assertTrue(callable(scheduled_fn))
             finally:
                 window.close()
 
@@ -590,6 +624,36 @@ class MainWindowTests(unittest.TestCase):
                     stored_style = window.repository.get_style("a")
                     self.assertIsNotNone(stored_style)
                     self.assertEqual(stored_style.theme, "protected-area")
+            finally:
+                window.close()
+
+    def test_style_generation_reports_missing_datasets_in_summary(self) -> None:
+        with patch("grasp.ui.main_window.WEBENGINE_AVAILABLE", False):
+            window = MainWindow()
+            try:
+                with tempfile.TemporaryDirectory() as tmp:
+                    window._set_workspace(tmp)
+                    window.repository.replace_datasets(
+                        [
+                            DatasetRecord(
+                                dataset_id="a",
+                                source_path="D:/data/parque.gpkg",
+                                source_format="gpkg",
+                                layer_name="Patrimonio Parque Nacional",
+                                geometry_type="MultiPolygon",
+                                cache_path="a.parquet",
+                            )
+                        ]
+                    )
+                    messages: list[str] = []
+
+                    processed = window._style_dataset_ids(["a", "missing"], status_callback=messages.append)
+
+                    self.assertEqual(processed, 1)
+                    self.assertTrue(any("Skipping missing dataset 2/2: missing" == message for message in messages))
+                    self.assertTrue(
+                        any("Styled 1/2 dataset(s). Skipped 1 missing dataset(s)." == message for message in messages)
+                    )
             finally:
                 window.close()
 
