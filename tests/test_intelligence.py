@@ -50,6 +50,15 @@ class _CapturingSession:
         return _CapturingResponse(self.payload)
 
 
+class _HttpErrorResponse:
+    def __init__(self, status_code: int, payload: dict | None = None) -> None:
+        self.status_code = status_code
+        self._payload = payload or {}
+
+    def json(self) -> dict:
+        return self._payload
+
+
 class _FailingSearchSession:
     def __init__(self) -> None:
         self.calls = 0
@@ -287,6 +296,63 @@ class IntelligenceTests(unittest.TestCase):
         self.assertTrue(third.suggested_title)
         self.assertTrue(provider.remote_disabled)
         self.assertEqual(session.calls, 2)
+
+    def test_openai_provider_reports_missing_api_key_status(self) -> None:
+        provider = OpenAIClassificationProvider()
+
+        available, message = provider.remote_availability_status()
+
+        self.assertFalse(available)
+        self.assertIn("OpenAI API key is missing", message)
+
+    def test_openai_provider_consumes_last_error_message_once(self) -> None:
+        provider = OpenAIClassificationProvider()
+        provider.last_error_message = "OpenAI request timed out after 20s."
+
+        message = provider.consume_last_error_message()
+
+        self.assertEqual(message, "OpenAI request timed out after 20s.")
+        self.assertEqual(provider.consume_last_error_message(), "")
+
+    def test_openai_http_error_message_reports_missing_quota(self) -> None:
+        provider = OpenAIClassificationProvider(api_key="test-key")
+        response = _HttpErrorResponse(
+            429,
+            {
+                "error": {
+                    "message": "You exceeded your current quota.",
+                    "code": "insufficient_quota",
+                }
+            },
+        )
+
+        message = provider._http_error_message(requests.HTTPError(response=response))
+
+        self.assertIn("no remaining quota", message)
+
+    def test_openai_http_error_message_reports_rate_limit(self) -> None:
+        provider = OpenAIClassificationProvider(api_key="test-key")
+        response = _HttpErrorResponse(
+            429,
+            {
+                "error": {
+                    "message": "Rate limit reached for requests per min.",
+                    "code": "rate_limit_exceeded",
+                }
+            },
+        )
+
+        message = provider._http_error_message(requests.HTTPError(response=response))
+
+        self.assertIn("429 rate limit", message)
+
+    def test_openai_http_error_message_reports_unauthorized_key(self) -> None:
+        provider = OpenAIClassificationProvider(api_key="bad-key")
+        response = _HttpErrorResponse(401, {"error": {"message": "Invalid authentication credentials"}})
+
+        message = provider._http_error_message(requests.HTTPError(response=response))
+
+        self.assertIn("401 Unauthorized", message)
 
     def test_openai_group_datasets_uses_timeout_override(self) -> None:
         session = _CapturingSession(

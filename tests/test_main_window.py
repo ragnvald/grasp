@@ -7,9 +7,11 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from grasp.branding import APP_AUTHOR, APP_TAGLINE, APP_WINDOW_TITLE
+from grasp.intelligence.providers import OpenAIClassificationProvider
+from grasp.intelligence.service import IntelligenceService
 from grasp.models import DatasetRecord, DatasetUnderstanding, SourceCandidate
-from grasp.qt_compat import QApplication, Qt
-from grasp.ui.main_window import MainWindow
+from grasp.qt_compat import QApplication, QAbstractItemView, Qt
+from grasp.ui.main_window import MAP_HTTP_USER_AGENT, MainWindow
 
 
 class MainWindowTests(unittest.TestCase):
@@ -124,7 +126,11 @@ class MainWindowTests(unittest.TestCase):
             try:
                 self.assertEqual([window.tabs.tabText(index) for index in range(window.tabs.count())], ["Import", "Review", "Map / Export", "Settings", "About"])
                 self.assertEqual(window.datasets_group_box.title(), "Datasets")
-                self.assertEqual(window.review_actions_group_box.title(), "AI & Sources")
+                self.assertEqual(window.browse_button.text(), "Browse")
+                self.assertEqual(window.scan_button.text(), "Load from folder")
+                self.assertEqual(window.load_existing_button.text(), "Load Existing")
+                self.assertEqual(window.reset_data_button.text(), "Reset All Data")
+                self.assertEqual(window.review_actions_group_box.title(), "Info & Sources")
                 self.assertEqual(window.selection_group_box.title(), "Selection")
                 self.assertEqual(window.grouping_group_box.title(), "Grouping")
                 self.assertEqual(window.dataset_actions_group_box.title(), "Selection actions")
@@ -135,6 +141,7 @@ class MainWindowTests(unittest.TestCase):
                 self.assertEqual(window.hide_all_button.text(), "Clear All")
                 self.assertEqual(window.show_group_button.text(), "Select Group")
                 self.assertEqual(window.hide_group_button.text(), "Clear Group")
+                self.assertEqual(window.fast_info_button.text(), "Find info (fast)")
                 self.assertEqual(window.run_ai_sources_button.text(), "Find info (AI)")
                 self.assertEqual(window.find_sources_button.text(), "Find sources")
                 self.assertEqual(window.regroup_button.text(), "AI Regroup...")
@@ -146,6 +153,7 @@ class MainWindowTests(unittest.TestCase):
                 self.assertEqual(window.include_in_report_button.text(), "Include in report")
                 self.assertEqual(window.transfer_ai_selected_button.maximumWidth(), 220)
                 self.assertEqual(window.save_dataset_button.maximumWidth(), 150)
+                self.assertIn("find info (fast) runs a local first-pass", window.review_actions_note.text().lower())
                 self.assertIn("find info (ai) updates ai title", window.review_actions_note.text().lower())
                 self.assertTrue(window.datasets_group_box.isAncestorOf(window.new_group_button))
                 self.assertTrue(window.datasets_group_box.isAncestorOf(window.apply_group_button))
@@ -159,6 +167,7 @@ class MainWindowTests(unittest.TestCase):
                 self.assertTrue(window.datasets_group_box.isAncestorOf(window.hide_group_button))
                 self.assertTrue(window.datasets_group_box.isAncestorOf(window.tree))
                 self.assertTrue(window.review_actions_group_box.isAncestorOf(window.run_ai_sources_button))
+                self.assertTrue(window.review_actions_group_box.isAncestorOf(window.fast_info_button))
                 self.assertTrue(window.review_actions_group_box.isAncestorOf(window.find_sources_button))
                 self.assertTrue(window.review_actions_group_box.isAncestorOf(window.review_scope_combo))
                 self.assertTrue(window.review_actions_group_box.isAncestorOf(window.review_actions_note))
@@ -187,6 +196,13 @@ class MainWindowTests(unittest.TestCase):
                 self.assertEqual(window.exit_button.maximumWidth(), 72)
                 self.assertEqual(window.exit_button.objectName(), "CornerExitButton")
                 self.assertTrue(hasattr(window, "map_scope_combo"))
+                self.assertEqual(window.map_scope_combo.itemText(0), "Visible on map")
+                self.assertEqual(window.map_scope_combo.itemData(0), "visible")
+                self.assertEqual(window.map_scope_combo.itemText(1), "Show all")
+                self.assertEqual(window.map_scope_combo.itemData(1), "all")
+                self.assertEqual(window._map_scope(), "visible")
+                self.assertTrue(window.import_table.isSortingEnabled())
+                self.assertEqual(window.import_table.editTriggers(), QAbstractItemView.NoEditTriggers)
                 self.assertIn("QTreeWidget::item:selected", window.styleSheet())
                 self.assertIn("show-decoration-selected: 1;", window.styleSheet())
                 self.assertIn("QTreeWidget::indicator:checked", window.styleSheet())
@@ -195,6 +211,132 @@ class MainWindowTests(unittest.TestCase):
                 self.assertIn("checkmark_indeterminate.svg", window.styleSheet())
                 self.assertIn("QPushButton#CornerExitButton", window.styleSheet())
                 self.assertIn("max-height: 24px;", window.styleSheet())
+            finally:
+                window.close()
+
+    def test_import_table_supports_sorting_without_editing(self) -> None:
+        with patch("grasp.ui.main_window.WEBENGINE_AVAILABLE", False):
+            window = MainWindow()
+            try:
+                with tempfile.TemporaryDirectory() as tmp:
+                    window._set_workspace(tmp)
+                    window.repository.replace_datasets(
+                        [
+                            DatasetRecord(
+                                dataset_id="b",
+                                source_path="D:/data/zones.geojson",
+                                source_format="geojson",
+                                layer_name="Zones",
+                                geometry_type="Polygon",
+                                feature_count=12,
+                                cache_path="b.parquet",
+                            ),
+                            DatasetRecord(
+                                dataset_id="a",
+                                source_path="D:/data/roads.geojson",
+                                source_format="shp",
+                                layer_name="Roads",
+                                geometry_type="LineString",
+                                feature_count=2,
+                                cache_path="a.parquet",
+                            ),
+                            DatasetRecord(
+                                dataset_id="c",
+                                source_path="D:/data/places.parquet",
+                                source_format="parquet",
+                                layer_name="Places",
+                                geometry_type="Point",
+                                feature_count=30,
+                                cache_path="c.parquet",
+                            ),
+                        ]
+                    )
+
+                    window.refresh_import_table()
+                    window.import_table.sortItems(3, Qt.AscendingOrder)
+
+                    self.assertEqual(window.import_table.item(0, 0).text(), "Roads")
+                    self.assertEqual(window.import_table.item(1, 0).text(), "Zones")
+                    self.assertEqual(window.import_table.item(2, 0).text(), "Places")
+                    self.assertEqual(window.import_table.editTriggers(), QAbstractItemView.NoEditTriggers)
+            finally:
+                window.close()
+
+    def test_setup_map_bridge_configures_web_profile_user_agent_and_cache(self) -> None:
+        with patch("grasp.ui.main_window.WEBENGINE_AVAILABLE", False):
+            window = MainWindow()
+            try:
+                with tempfile.TemporaryDirectory() as tmp:
+                    window._set_workspace(tmp)
+                    user_agents: list[str] = []
+                    cache_paths: list[str] = []
+                    storage_paths: list[str] = []
+                    web_channels: list[object] = []
+                    loaded_urls: list[str] = []
+
+                    class _Settings:
+                        def __init__(self) -> None:
+                            self.attributes = []
+
+                        def setAttribute(self, attribute, value) -> None:
+                            self.attributes.append((attribute, value))
+
+                    class _Profile:
+                        def setHttpUserAgent(self, value: str) -> None:
+                            user_agents.append(value)
+
+                        def setCachePath(self, value: str) -> None:
+                            cache_paths.append(value)
+
+                        def setPersistentStoragePath(self, value: str) -> None:
+                            storage_paths.append(value)
+
+                    class _Page:
+                        def __init__(self) -> None:
+                            self._settings = _Settings()
+                            self._profile = _Profile()
+
+                        def settings(self):
+                            return self._settings
+
+                        def profile(self):
+                            return self._profile
+
+                        def setWebChannel(self, channel) -> None:
+                            web_channels.append(channel)
+
+                    class _MapView:
+                        def __init__(self) -> None:
+                            self._page = _Page()
+
+                        def page(self):
+                            return self._page
+
+                        def load(self, url) -> None:
+                            loaded_urls.append(url.toString())
+
+                    class _Channel:
+                        def __init__(self, _page) -> None:
+                            self.registered = []
+
+                        def registerObject(self, name, value) -> None:
+                            self.registered.append((name, value))
+
+                    window.map_view = _MapView()
+
+                    with patch("grasp.ui.main_window.WEBENGINE_AVAILABLE", True), patch(
+                        "grasp.ui.main_window.QWebChannel",
+                        _Channel,
+                    ):
+                        window._setup_map_bridge()
+
+                    self.assertEqual(user_agents, [MAP_HTTP_USER_AGENT])
+                    self.assertEqual(len(cache_paths), 1)
+                    self.assertEqual(len(storage_paths), 1)
+                    self.assertTrue(cache_paths[0].endswith("data_out\\web_cache") or cache_paths[0].endswith("data_out/web_cache"))
+                    self.assertTrue(storage_paths[0].endswith("data_out\\web_profile") or storage_paths[0].endswith("data_out/web_profile"))
+                    self.assertEqual(len(web_channels), 1)
+                    self.assertEqual(len(loaded_urls), 1)
             finally:
                 window.close()
 
@@ -365,17 +507,17 @@ class MainWindowTests(unittest.TestCase):
                 called = []
                 window.refresh_all_views = lambda: called.append("refreshed")
 
-                window._refresh_all_views_after_worker("Initial Heuristic Classification")
+                window._refresh_all_views_after_worker("Fast Local Classification")
 
                 self.assertEqual(called, ["refreshed"])
                 self.assertIn(
-                    "[Initial Heuristic Classification] - Applying results to the catalog and refreshing views.",
+                    "[Fast Local Classification] - Applying results to the catalog and refreshing views.",
                     window.log_text.toPlainText(),
                 )
             finally:
                 window.close()
 
-    def test_scan_result_queues_heuristic_auto_classification(self) -> None:
+    def test_scan_result_leaves_fast_local_classification_for_review(self) -> None:
         with patch("grasp.ui.main_window.WEBENGINE_AVAILABLE", False):
             window = MainWindow()
             try:
@@ -401,11 +543,9 @@ class MainWindowTests(unittest.TestCase):
 
                     window.on_scan_result([dataset])
 
-                    self.assertEqual(captured["fn_name"], "_heuristic_classify_dataset_ids")
-                    self.assertEqual(captured["dataset_ids"], ["auto1"])
-                    self.assertEqual(captured["activity_name"], "Initial Heuristic Classification")
+                    self.assertEqual(captured, {})
                     self.assertIn(
-                        "Queued initial heuristic classification for new or changed datasets with a 1-minute time budget.",
+                        "1 new or changed dataset(s) are ready for Find info (fast) in Review.",
                         window.log_text.toPlainText(),
                     )
             finally:
@@ -431,7 +571,7 @@ class MainWindowTests(unittest.TestCase):
             finally:
                 window.close()
 
-    def test_initial_heuristic_classification_stops_after_one_minute_budget(self) -> None:
+    def test_fast_local_classification_stops_after_one_minute_budget(self) -> None:
         with patch("grasp.ui.main_window.WEBENGINE_AVAILABLE", False):
             window = MainWindow()
             try:
@@ -457,18 +597,18 @@ class MainWindowTests(unittest.TestCase):
                     self.assertEqual(window.repository.get_dataset("b").display_name_ai, "")
                     self.assertEqual(window.repository.get_dataset("c").display_name_ai, "")
                     self.assertTrue(
-                        any("Heuristic classification has a 01:00 time budget for this automatic pass." in message for message in messages)
+                        any("Fast local classification has a 01:00 time budget for this pass." in message for message in messages)
                     )
                     self.assertTrue(
                         any(
-                            "Heuristic classification time budget reached after 01:01. Leaving 2 dataset(s) unchanged for now."
+                            "Fast local classification time budget reached after 01:01. Leaving 2 dataset(s) unchanged for now."
                             in message
                             for message in messages
                         )
                     )
                     self.assertTrue(
                         any(
-                            "Heuristic classification finished the automatic pass after processing 1/3 dataset(s)." in message
+                            "Fast local classification finished this pass after processing 1/3 dataset(s)." in message
                             for message in messages
                         )
                     )
@@ -591,6 +731,181 @@ class MainWindowTests(unittest.TestCase):
                 self.assertEqual(provider.timeout_s, 2.5)
                 self.assertEqual(provider.max_consecutive_failures, 3)
                 self.assertEqual(provider.target_candidates, 9)
+            finally:
+                window.close()
+
+    def test_ai_runtime_note_describes_sequential_timeout_budget(self) -> None:
+        with patch("grasp.ui.main_window.WEBENGINE_AVAILABLE", False):
+            window = MainWindow()
+            try:
+                window.current_settings.openai_api_key = "test-key"
+                window._rebuild_ai_services()
+                note = window._ai_runtime_note(307)
+                self.assertIn("run sequentially for 307 dataset(s)", note)
+                self.assertIn("per-dataset timeout is 20s", note)
+                self.assertIn("102:20", note)
+                self.assertIn("0.35s cooldown", note)
+            finally:
+                window.close()
+
+    def test_ai_runtime_note_reports_missing_api_key_and_fallback(self) -> None:
+        with patch("grasp.ui.main_window.WEBENGINE_AVAILABLE", False):
+            window = MainWindow()
+            try:
+                note = window._ai_runtime_note(12)
+                self.assertIn("OpenAI API key is missing", note)
+                self.assertIn("heuristic fallback for 12 dataset(s)", note)
+            finally:
+                window.close()
+
+    def test_manual_ai_understanding_status_mentions_waiting_for_ai_response(self) -> None:
+        with patch("grasp.ui.main_window.WEBENGINE_AVAILABLE", False):
+            window = MainWindow()
+            try:
+                class _Response:
+                    def raise_for_status(self) -> None:
+                        return None
+
+                    def json(self) -> dict:
+                        return {
+                            "choices": [
+                                {
+                                    "message": {
+                                        "content": '{"theme":"coastal","keywords":["zoneamento","erosao"],'
+                                        '"place_names":[],"suggested_title":"AI title",'
+                                        '"suggested_description":"AI description",'
+                                        '"suggested_group":"coastal","search_queries":["erosao buffer"],'
+                                        '"confidence":0.8}'
+                                    }
+                                }
+                            ]
+                        }
+
+                class _Session:
+                    def post(self, *_args, **_kwargs):
+                        return _Response()
+
+                with tempfile.TemporaryDirectory() as tmp:
+                    window._set_workspace(tmp)
+                    window.repository.replace_datasets(
+                        [
+                            DatasetRecord(
+                                dataset_id="a",
+                                source_path="D:/data/a.geojson",
+                                source_format="geojson",
+                                layer_name="Zoneamento Erosao Buffer 300",
+                                cache_path="a.parquet",
+                            )
+                        ]
+                    )
+                    messages: list[str] = []
+                    provider = OpenAIClassificationProvider(
+                        api_key="test-key",
+                        session=_Session(),
+                    )
+                    window.intelligence_service = IntelligenceService(
+                        classifier=provider,
+                    )
+
+                    processed = window._classify_dataset_ids(["a"], status_callback=messages.append)
+
+                    self.assertEqual(processed, 1)
+                    self.assertTrue(
+                        any(
+                            "Finding info with AI 1/1: Zoneamento Erosao Buffer 300 (waiting for AI response)"
+                            in message
+                            for message in messages
+                        )
+                    )
+                    self.assertFalse(
+                        any("using heuristic fallback" in message for message in messages)
+                    )
+                    self.assertTrue(
+                        any(
+                            "Completed finding info with ai for 1/1 dataset(s)." in message
+                            for message in messages
+                        )
+                    )
+            finally:
+                window.close()
+
+    def test_manual_ai_understanding_logs_heuristic_fallback_when_api_key_is_missing(self) -> None:
+        with patch("grasp.ui.main_window.WEBENGINE_AVAILABLE", False):
+            window = MainWindow()
+            try:
+                with tempfile.TemporaryDirectory() as tmp:
+                    window._set_workspace(tmp)
+                    window.repository.replace_datasets(
+                        [
+                            DatasetRecord(
+                                dataset_id="a",
+                                source_path="D:/data/a.geojson",
+                                source_format="geojson",
+                                layer_name="Zoneamento Erosao Buffer 300",
+                                cache_path="a.parquet",
+                            )
+                        ]
+                    )
+                    messages: list[str] = []
+
+                    processed = window._classify_dataset_ids(["a"], status_callback=messages.append)
+
+                    self.assertEqual(processed, 1)
+                    self.assertTrue(
+                        any(
+                            "Finding info with AI 1/1: Zoneamento Erosao Buffer 300 (using heuristic fallback)"
+                            in message
+                            for message in messages
+                        )
+                    )
+                    self.assertTrue(
+                        any("OpenAI API key is missing" in message for message in messages)
+                    )
+            finally:
+                window.close()
+
+    def test_classification_batches_catalog_persistence_and_logs_it(self) -> None:
+        with patch("grasp.ui.main_window.WEBENGINE_AVAILABLE", False):
+            window = MainWindow()
+            try:
+                with tempfile.TemporaryDirectory() as tmp:
+                    window._set_workspace(tmp)
+                    window.repository.replace_datasets(
+                        [
+                            DatasetRecord(dataset_id="a", source_path="a", source_format="geojson", layer_name="Layer A", cache_path="a.parquet"),
+                            DatasetRecord(dataset_id="b", source_path="b", source_format="geojson", layer_name="Layer B", cache_path="b.parquet"),
+                            DatasetRecord(dataset_id="c", source_path="c", source_format="geojson", layer_name="Layer C", cache_path="c.parquet"),
+                        ]
+                    )
+                    messages: list[str] = []
+                    batch_sizes: list[int] = []
+                    original_bulk_upsert = window.repository.upsert_understandings_bulk
+
+                    def _capture_bulk_upsert(updates, *, auto_assign_group=False):
+                        batch_sizes.append(len(updates))
+                        return original_bulk_upsert(updates, auto_assign_group=auto_assign_group)
+
+                    window.intelligence_service = SimpleNamespace(
+                        classify=lambda dataset: DatasetUnderstanding(
+                            suggested_title=f"AI {dataset.layer_name}",
+                            suggested_description="AI description",
+                            suggested_group="coastal",
+                            confidence=0.8,
+                        )
+                    )
+                    window.repository.upsert_understandings_bulk = _capture_bulk_upsert
+
+                    with patch("grasp.ui.main_window.UNDERSTANDING_PERSIST_BATCH_SIZE", 2):
+                        processed = window._classify_dataset_ids(["a", "b", "c"], status_callback=messages.append)
+
+                    self.assertEqual(processed, 3)
+                    self.assertEqual(batch_sizes, [2, 1])
+                    self.assertTrue(
+                        any("Persisting 2 understanding update(s) to the catalog." in message for message in messages)
+                    )
+                    self.assertTrue(
+                        any("Persisting 1 understanding update(s) to the catalog." in message for message in messages)
+                    )
             finally:
                 window.close()
 
@@ -780,6 +1095,7 @@ class MainWindowTests(unittest.TestCase):
 
                     self.assertTrue(window.repository.get_dataset("a").visibility)
                     self.assertFalse(window.repository.get_dataset("b").visibility)
+                    self.assertEqual(window._map_scope(), "visible")
             finally:
                 window.close()
 
@@ -1131,6 +1447,46 @@ class MainWindowTests(unittest.TestCase):
                     window.start_ai_for_scope()
 
                     self.assertEqual(captured, [("_classify_dataset_ids", ["a"])])
+            finally:
+                window.close()
+
+    def test_fast_info_action_uses_checked_scope_and_heuristic_worker(self) -> None:
+        with patch("grasp.ui.main_window.WEBENGINE_AVAILABLE", False):
+            window = MainWindow()
+            try:
+                with tempfile.TemporaryDirectory() as tmp:
+                    window._set_workspace(tmp)
+                    window.repository.replace_datasets(
+                        [
+                            DatasetRecord(
+                                dataset_id="a",
+                                source_path="a",
+                                source_format="geojson",
+                                cache_path="a.parquet",
+                            ),
+                            DatasetRecord(
+                                dataset_id="b",
+                                source_path="b",
+                                source_format="geojson",
+                                cache_path="b.parquet",
+                            ),
+                        ]
+                    )
+
+                    window.refresh_all_views()
+                    group_item = window.tree.topLevelItem(0)
+                    group_item.child(0).setCheckState(0, Qt.Checked)
+                    captured: list[tuple[str, list[str], str]] = []
+                    window._run_review_job_foreground_with_refresh = (
+                        lambda fn, dataset_ids, success_message, **kwargs: captured.append(
+                            (fn.__name__, dataset_ids, kwargs.get("activity_name", ""))
+                        )
+                    )
+
+                    window.review_scope_combo.setCurrentIndex(window.review_scope_combo.findData("checked"))
+                    window.start_fast_info_for_scope()
+
+                    self.assertEqual(captured, [("_heuristic_classify_dataset_ids", ["a"], "Fast Local Classification")])
             finally:
                 window.close()
 

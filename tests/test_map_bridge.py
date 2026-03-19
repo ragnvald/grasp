@@ -83,6 +83,48 @@ class MapBridgeTests(unittest.TestCase):
             self.assertIn("style", state["datasets"][0])
             self.assertTrue(state["datasets"][0]["style"]["theme"])
 
+    def test_get_state_respects_visible_scope_by_default_and_show_all_override(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = ensure_workspace(tmp)
+            repository = CatalogRepository(workspace.db_path)
+            repository.replace_datasets(
+                [
+                    DatasetRecord(
+                        dataset_id="visible-ds",
+                        source_path=str(Path(tmp) / "visible.geojson"),
+                        source_format="geojson",
+                        geometry_type="Polygon",
+                        feature_count=3,
+                        visibility=True,
+                        bbox_wgs84=[10.0, 60.0, 11.0, 61.0],
+                        cache_path="visible.parquet",
+                    ),
+                    DatasetRecord(
+                        dataset_id="hidden-ds",
+                        source_path=str(Path(tmp) / "hidden.geojson"),
+                        source_format="geojson",
+                        geometry_type="Polygon",
+                        feature_count=4,
+                        visibility=False,
+                        bbox_wgs84=[12.0, 62.0, 13.0, 63.0],
+                        cache_path="hidden.parquet",
+                    ),
+                ]
+            )
+            bridge = MapBridge(workspace, repository)
+
+            visible_state = json.loads(bridge.getState())
+            self.assertEqual([item["dataset_id"] for item in visible_state["datasets"]], ["visible-ds"])
+            self.assertEqual(visible_state["bounds"], [10.0, 60.0, 11.0, 61.0])
+
+            bridge.set_scope("all")
+            all_state = json.loads(bridge.getState())
+            self.assertEqual(
+                [item["dataset_id"] for item in all_state["datasets"]],
+                ["visible-ds", "hidden-ds"],
+            )
+            self.assertEqual(all_state["bounds"], [10.0, 60.0, 13.0, 63.0])
+
     def test_prepare_preview_gdf_limits_point_features(self) -> None:
         limit = MAP_PREVIEW_FEATURE_LIMITS["point"]
         gdf = gpd.GeoDataFrame(

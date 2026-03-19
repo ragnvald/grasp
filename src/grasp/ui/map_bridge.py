@@ -31,13 +31,21 @@ class MapBridge(QObject):
         self.ingest_service = IngestService(workspace)
         self.style_service = StyleService()
         self._geojson_cache: dict[str, tuple[str, str]] = {}
+        self._scope = "visible"
+
+    def set_scope(self, scope: str) -> None:
+        if str(scope or "").lower() == "all":
+            self._scope = "all"
+            return
+        self._scope = "visible"
 
     @Slot(result=str)
     def getState(self) -> str:
         groups = dict(self.repository.list_groups())
         datasets = []
         all_bounds = []
-        for dataset in self.repository.list_datasets():
+        scoped_datasets = self._datasets_for_scope()
+        for dataset in scoped_datasets:
             if dataset.bbox_wgs84:
                 all_bounds.append(dataset.bbox_wgs84)
             sources = self.repository.list_sources(dataset.dataset_id)
@@ -94,6 +102,12 @@ class MapBridge(QObject):
 
     def publish_state(self) -> None:
         self.stateChanged.emit(self.getState())
+
+    def _datasets_for_scope(self) -> list[DatasetRecord]:
+        datasets = self.repository.list_datasets()
+        if self._scope == "all":
+            return datasets
+        return [dataset for dataset in datasets if dataset.visibility]
 
     def _resolve_cache_path(self, dataset) -> Path:
         return self.workspace.resolve_cache_path(dataset.dataset_id, dataset.cache_path)

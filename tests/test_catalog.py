@@ -256,6 +256,59 @@ class CatalogRepositoryTests(unittest.TestCase):
             self.assertEqual(repo.get_dataset("b").group_id, "protected-area")
             self.assertNotIn(("old-group", "Old Group"), repo.list_groups())
 
+    def test_upsert_understandings_bulk_updates_ai_fields_and_auto_assigns_group(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = CatalogRepository(Path(tmp) / "catalog.sqlite")
+            repo.replace_datasets(
+                [
+                    DatasetRecord(
+                        dataset_id="a",
+                        source_path="D:/data/a.geojson",
+                        source_format="geojson",
+                        group_id="ungrouped",
+                        cache_path="a.parquet",
+                    ),
+                    DatasetRecord(
+                        dataset_id="b",
+                        source_path="D:/data/b.geojson",
+                        source_format="geojson",
+                        group_id="manual-group",
+                        cache_path="b.parquet",
+                    ),
+                ]
+            )
+
+            changed = repo.upsert_understandings_bulk(
+                [
+                    (
+                        "a",
+                        DatasetUnderstanding(
+                            suggested_title="Protected Area",
+                            suggested_description="Auto description A",
+                            suggested_group="protected-area",
+                            confidence=0.8,
+                        ),
+                    ),
+                    (
+                        "b",
+                        DatasetUnderstanding(
+                            suggested_title="Administrative",
+                            suggested_description="Auto description B",
+                            suggested_group="administrative",
+                            confidence=0.7,
+                        ),
+                    ),
+                ],
+                auto_assign_group=True,
+            )
+
+            self.assertEqual(changed, 2)
+            self.assertEqual(repo.get_dataset("a").display_name_ai, "Protected Area")
+            self.assertEqual(repo.get_dataset("a").group_id, "protected-area")
+            self.assertEqual(repo.get_dataset("b").display_name_ai, "Administrative")
+            self.assertEqual(repo.get_dataset("b").group_id, "manual-group")
+            self.assertIn(("protected-area", "Protected Area"), repo.list_groups())
+
 
 if __name__ == "__main__":
     unittest.main()

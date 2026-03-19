@@ -547,6 +547,7 @@ class OpenAIClassificationProvider(ClassificationProvider, CandidateRanker):
         )
         self.consecutive_failures = 0
         self.remote_disabled = False
+        self.last_error_message = ""
         self.include_source_name = bool(include_source_name)
         self.include_layer_name = bool(include_layer_name)
         self.include_column_names = bool(include_column_names)
@@ -554,6 +555,20 @@ class OpenAIClassificationProvider(ClassificationProvider, CandidateRanker):
         self.include_geometry_type = bool(include_geometry_type)
         self.include_feature_count = bool(include_feature_count)
         self.include_bbox = bool(include_bbox)
+
+    def remote_availability_status(self) -> tuple[bool, str]:
+        if not self.api_key:
+            return False, "OpenAI API key is missing. Configure it in Settings to use Find info (AI)."
+        if self.remote_disabled:
+            if self.last_error_message:
+                return False, self.last_error_message
+            return False, "OpenAI is unavailable for the rest of this session after repeated failures."
+        return True, f"OpenAI is available with model {self.model}."
+
+    def consume_last_error_message(self) -> str:
+        message = self.last_error_message.strip()
+        self.last_error_message = ""
+        return message
 
     def classify(self, dataset: DatasetRecord) -> DatasetUnderstanding:
         if not self._can_use_remote():
@@ -805,7 +820,14 @@ class OpenAIClassificationProvider(ClassificationProvider, CandidateRanker):
         return _merge_understandings(understanding, fallback)
 
     def _can_use_remote(self) -> bool:
-        return bool(self.api_key) and not self.remote_disabled
+        if not self.api_key:
+            self.last_error_message = "OpenAI API key is missing. Configure it in Settings to use Find info (AI)."
+            return False
+        if self.remote_disabled:
+            if not self.last_error_message:
+                self.last_error_message = "OpenAI is unavailable for the rest of this session after repeated failures."
+            return False
+        return True
 
     def _chat(self, system_prompt: str, user_prompt: str, *, timeout_s: float | None = None) -> str:
         if not self._can_use_remote():
@@ -832,12 +854,55 @@ class OpenAIClassificationProvider(ClassificationProvider, CandidateRanker):
             response.raise_for_status()
             envelope = response.json()
             self.consecutive_failures = 0
+            self.last_error_message = ""
             return str(envelope["choices"][0]["message"]["content"]).strip()
-        except Exception:
+        except requests.Timeout:
+            self.last_error_message = f"OpenAI request timed out after {effective_timeout_s:g}s."
             self.consecutive_failures += 1
-            if self.consecutive_failures >= self.max_consecutive_failures:
-                self.remote_disabled = True
-            return ""
+        except requests.HTTPError as exc:
+            self.last_error_message = self._http_error_message(exc)
+            self.consecutive_failures += 1
+        except requests.RequestException as exc:
+            self.last_error_message = f"OpenAI request failed: {exc.__class__.__name__}: {exc}"
+            self.consecutive_failures += 1
+        except Exception as exc:
+            self.last_error_message = f"OpenAI request failed: {exc.__class__.__name__}: {exc}"
+            self.consecutive_failures += 1
+        if self.consecutive_failures >= self.max_consecutive_failures:
+            self.remote_disabled = True
+            self.last_error_message = (
+                f"{self.last_error_message} "
+                "Remote AI has been disabled for the rest of this session."
+            ).strip()
+        return ""
+
+    def _http_error_message(self, exc: requests.HTTPError) -> str:
+        response = exc.response
+        if response is None:
+            return f"OpenAI request failed: HTTP error: {exc}"
+        status_code = int(getattr(response, "status_code", 0) or 0)
+        error_message = ""
+        error_code = ""
+        try:
+            payload = response.json()
+            if isinstance(payload, dict):
+                error = payload.get("error", {})
+                if isinstance(error, dict):
+                    error_message = str(error.get("message") or "").strip()
+                    error_code = str(error.get("code") or "").strip().lower()
+        except Exception:
+            error_message = ""
+        if status_code == 401:
+            return "OpenAI request failed with 401 Unauthorized. Check the API key in Settings."
+        if status_code == 429:
+            if error_code == "insufficient_quota" or "quota" in error_message.lower():
+                return "OpenAI request failed because the account has no remaining quota."
+            return "OpenAI request hit a 429 rate limit. Slow down requests or try again later."
+        if status_code >= 500:
+            return f"OpenAI request failed with server error {status_code}. Try again later."
+        if error_message:
+            return f"OpenAI request failed with HTTP {status_code}: {error_message}"
+        return f"OpenAI request failed with HTTP {status_code}."
 
 
 class DuckDuckGoSearchProvider(SourceSearchProvider):

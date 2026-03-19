@@ -417,34 +417,87 @@ class CatalogRepository:
             conn.commit()
 
     def upsert_understanding(self, dataset_id: str, understanding: DatasetUnderstanding) -> None:
-        payload = understanding.to_json()
-        suggested_group = sanitize_group_id(understanding.suggested_group or "ungrouped")
-        self.ensure_group(suggested_group)
-        with closing(self._connect()) as conn:
-            conn.execute(
-                """
-                INSERT INTO understandings (dataset_id, payload_json, updated_at)
-                VALUES (?, ?, ?)
-                ON CONFLICT(dataset_id) DO UPDATE SET payload_json = excluded.payload_json, updated_at = excluded.updated_at
-                """,
-                (dataset_id, payload, _utc_now()),
-            )
-            conn.execute(
-                """
-                UPDATE datasets
-                SET display_name_ai = ?, description_ai = ?, ai_confidence = ?, suggested_group = ?, updated_at = ?
-                WHERE dataset_id = ?
-                """,
+        self.upsert_understandings_bulk([(dataset_id, understanding)])
+
+    def upsert_understandings_bulk(
+        self,
+        updates: list[tuple[str, DatasetUnderstanding]],
+        *,
+        auto_assign_group: bool = False,
+    ) -> int:
+        if not updates:
+            return 0
+        normalized_updates: list[tuple[str, str, str, str, float, str]] = []
+        suggested_groups: set[str] = set()
+        dataset_ids: list[str] = []
+        for dataset_id, understanding in updates:
+            suggested_group = sanitize_group_id(understanding.suggested_group or "ungrouped")
+            normalized_updates.append(
                 (
+                    dataset_id,
+                    understanding.to_json(),
                     understanding.suggested_title,
                     understanding.suggested_description,
-                    understanding.confidence,
+                    float(understanding.confidence or 0.0),
                     suggested_group,
-                    _utc_now(),
-                    dataset_id,
-                ),
+                )
             )
+            suggested_groups.add(suggested_group)
+            dataset_ids.append(dataset_id)
+        with closing(self._connect()) as conn:
+            current_groups: dict[str, str] = {}
+            if auto_assign_group:
+                placeholders = ", ".join("?" for _ in dataset_ids)
+                rows = conn.execute(
+                    f"SELECT dataset_id, group_id FROM datasets WHERE dataset_id IN ({placeholders})",
+                    dataset_ids,
+                ).fetchall()
+                current_groups = {
+                    str(row["dataset_id"]): sanitize_group_id(str(row["group_id"] or "ungrouped"))
+                    for row in rows
+                }
+            for group_id in sorted(suggested_groups):
+                conn.execute(
+                    """
+                    INSERT OR IGNORE INTO groups (id, name, sort_order, created_at)
+                    VALUES (
+                        ?, ?, (SELECT COALESCE(MAX(sort_order), -1) + 1 FROM groups), ?
+                    )
+                    """,
+                    (group_id, display_group_name(group_id), _utc_now()),
+                )
+            for dataset_id, payload, suggested_title, suggested_description, confidence, suggested_group in normalized_updates:
+                updated_at = _utc_now()
+                conn.execute(
+                    """
+                    INSERT INTO understandings (dataset_id, payload_json, updated_at)
+                    VALUES (?, ?, ?)
+                    ON CONFLICT(dataset_id) DO UPDATE SET payload_json = excluded.payload_json, updated_at = excluded.updated_at
+                    """,
+                    (dataset_id, payload, updated_at),
+                )
+                conn.execute(
+                    """
+                    UPDATE datasets
+                    SET display_name_ai = ?, description_ai = ?, ai_confidence = ?, suggested_group = ?, updated_at = ?
+                    WHERE dataset_id = ?
+                    """,
+                    (
+                        suggested_title,
+                        suggested_description,
+                        confidence,
+                        suggested_group,
+                        updated_at,
+                        dataset_id,
+                    ),
+                )
+                if auto_assign_group and current_groups.get(dataset_id, "ungrouped") in {"", "ungrouped"} and suggested_group:
+                    conn.execute(
+                        "UPDATE datasets SET group_id = ?, updated_at = ? WHERE dataset_id = ?",
+                        (suggested_group, updated_at, dataset_id),
+                    )
             conn.commit()
+        return len(normalized_updates)
 
     def get_understanding(self, dataset_id: str) -> DatasetUnderstanding:
         with closing(self._connect()) as conn:

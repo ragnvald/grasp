@@ -7,7 +7,13 @@
   <script src="qrc:///qtwebchannel/qwebchannel.js"></script>
   <style>
     html, body, #map { height: 100%; margin: 0; }
-    body { background: #f4f3ef; font-family: "Segoe UI", sans-serif; }
+    body {
+      background: #f4f3ef;
+      font-family: "Segoe UI Variable Text", "Segoe UI", "Noto Sans", sans-serif;
+      text-rendering: optimizeLegibility;
+      -webkit-font-smoothing: antialiased;
+      -moz-osx-font-smoothing: grayscale;
+    }
     #map {
       position: relative;
       overflow: hidden;
@@ -48,15 +54,65 @@
     .offline-popup {
       position: absolute;
       z-index: 900;
-      max-width: 320px;
-      background: rgba(255, 255, 255, 0.96);
-      border: 1px solid rgba(45, 67, 77, 0.22);
-      border-radius: 10px;
-      padding: 10px 12px;
+      max-width: 360px;
+      background: rgba(255, 255, 255, 0.98);
+      border: 1px solid rgba(45, 67, 77, 0.26);
+      border-radius: 12px;
+      padding: 12px 14px;
       box-shadow: 0 12px 30px rgba(0, 0, 0, 0.14);
       color: #22323a;
-      font-size: 12px;
-      line-height: 1.45;
+      font-size: 14px;
+      line-height: 1.55;
+      text-rendering: optimizeLegibility;
+      -webkit-font-smoothing: antialiased;
+    }
+    .leaflet-popup-content-wrapper {
+      border-radius: 12px;
+      background: rgba(255, 255, 255, 0.98);
+      color: #22323a;
+      box-shadow: 0 14px 34px rgba(0, 0, 0, 0.16);
+    }
+    .leaflet-popup-content {
+      margin: 14px 16px;
+      min-width: 240px;
+      max-width: 360px;
+      font-family: "Segoe UI Variable Text", "Segoe UI", "Noto Sans", sans-serif;
+      font-size: 14px;
+      line-height: 1.55;
+      color: #22323a;
+      text-rendering: optimizeLegibility;
+      -webkit-font-smoothing: antialiased;
+    }
+    .leaflet-popup-tip {
+      background: rgba(255, 255, 255, 0.98);
+    }
+    .dataset-popup {
+      color: #22323a;
+      font-size: 14px;
+      line-height: 1.55;
+      letter-spacing: 0.01em;
+    }
+    .dataset-popup .popup-title {
+      display: block;
+      margin-bottom: 8px;
+      font-size: 16px;
+      font-weight: 700;
+      line-height: 1.35;
+    }
+    .dataset-popup .popup-description {
+      margin-bottom: 10px;
+      color: #33464f;
+      white-space: normal;
+    }
+    .dataset-popup .popup-attributes {
+      margin-top: 8px;
+    }
+    .dataset-popup .popup-attributes div {
+      margin-top: 4px;
+    }
+    .dataset-popup .popup-source {
+      margin-top: 10px;
+      word-break: break-word;
     }
     .map-controls {
       position: absolute;
@@ -430,10 +486,8 @@
       };
       syncBrowseSelection(datasets);
       updateLayerBrowser(datasets);
-      const visibleDatasets = datasets.filter(function(dataset){
-        return dataset.visible;
-      });
-      const selectedDatasets = mapMode === "browse" ? currentBrowseDatasets(datasets) : visibleDatasets;
+      const availableDatasets = datasets.slice();
+      const selectedDatasets = mapMode === "browse" ? currentBrowseDatasets(datasets) : availableDatasets;
       const visibleLayers = [];
       for (let index = 0; index < selectedDatasets.length; index += 1){
         const dataset = selectedDatasets[index];
@@ -451,7 +505,7 @@
         });
         await yieldToUi();
       }
-      return {datasets, visibleLayers, visibleCount: visibleDatasets.length};
+      return {datasets, visibleLayers, visibleCount: availableDatasets.length};
     }
 
     async function reloadState(){
@@ -488,7 +542,7 @@
       }
       const summaryText = mapMode === "browse"
         ? "Loaded layer " + browseLayerLabel(lastKnownState.datasets) + "."
-        : "Loaded " + loaded.visibleLayers.length + " visible dataset(s).";
+        : "Loaded " + loaded.visibleLayers.length + " available dataset(s).";
       status(summaryText);
     }
 
@@ -1152,18 +1206,24 @@
 
     function buildPopupHtml(dataset, properties){
       const lines = [];
-      lines.push("<strong>" + escapeHtml(dataset.name || "Dataset") + "</strong>");
+      lines.push('<div class="dataset-popup">');
+      lines.push('<div class="popup-title">' + escapeHtml(dataset.name || "Dataset") + "</div>");
       if (dataset.description){
-        lines.push(escapeHtml(dataset.description));
+        lines.push('<div class="popup-description">' + escapeHtml(dataset.description) + "</div>");
       }
       const keys = Object.keys(properties || {}).slice(0, 8);
-      for (const key of keys){
-        lines.push("<div><b>" + escapeHtml(key) + ":</b> " + escapeHtml(String(properties[key])) + "</div>");
+      if (keys.length){
+        lines.push('<div class="popup-attributes">');
+        for (const key of keys){
+          lines.push("<div><b>" + escapeHtml(key) + ":</b> " + escapeHtml(String(properties[key])) + "</div>");
+        }
+        lines.push("</div>");
       }
       if (dataset.source_url){
         const url = escapeHtml(dataset.source_url);
-        lines.push('<div><a href="' + url + '">' + url + "</a></div>");
+        lines.push('<div class="popup-source"><a href="' + url + '">' + url + "</a></div>");
       }
+      lines.push("</div>");
       return lines.join("");
     }
 

@@ -3,7 +3,8 @@
 from datetime import datetime
 from pathlib import Path
 import shutil
-from time import monotonic
+import traceback
+from time import monotonic, sleep
 
 from grasp.branding import (
     APP_ACRONYM,
@@ -27,6 +28,8 @@ from grasp.intelligence.providers import (
 from grasp.intelligence.service import IntelligenceService, SearchService
 from grasp.qt_compat import (
     QAction,
+    QApplication,
+    QAbstractItemView,
     QCheckBox,
     QComboBox,
     QFileDialog,
@@ -75,6 +78,9 @@ REGROUP_HINT_PREPARATION_TIMEOUT_S = 120.0
 REGROUP_TOTAL_TIMEOUT_S = 120.0
 INITIAL_HEURISTIC_CLASSIFICATION_TIMEOUT_S = 60.0
 REVIEW_JOB_STALE_LOCK_TIMEOUT_S = 300.0
+REMOTE_AI_REQUEST_COOLDOWN_S = 0.35
+UNDERSTANDING_PERSIST_BATCH_SIZE = 24
+MAP_HTTP_USER_AGENT = "GRASP-Desktop (+https://github.com/ragnvald/grasp)"
 
 
 class DatasetTreeWidget(QTreeWidget):
@@ -83,6 +89,17 @@ class DatasetTreeWidget(QTreeWidget):
     def dropEvent(self, event) -> None:  # type: ignore[override]
         super().dropEvent(event)
         self.orderingChanged.emit()
+
+
+class SortableTableWidgetItem(QTableWidgetItem):
+    def __init__(self, text: str, sort_value=None) -> None:
+        super().__init__(text)
+        self._sort_value = text if sort_value is None else sort_value
+
+    def __lt__(self, other) -> bool:  # type: ignore[override]
+        if isinstance(other, SortableTableWidgetItem):
+            return self._sort_value < other._sort_value
+        return super().__lt__(other)
 
 
 class MainWindow(QMainWindow):
@@ -203,7 +220,7 @@ class MainWindow(QMainWindow):
         self.load_existing_action.triggered.connect(self.load_existing_catalog)
         file_menu.addAction(self.load_existing_action)
 
-        scan_action = QAction("Scan Folder", self)
+        scan_action = QAction("Load from folder", self)
         scan_action.triggered.connect(self.start_scan)
         file_menu.addAction(scan_action)
 
@@ -239,7 +256,7 @@ class MainWindow(QMainWindow):
         self.browse_button.clicked.connect(self.browse_folder)
         row.addWidget(self.browse_button)
 
-        self.scan_button = QPushButton("Scan Folder")
+        self.scan_button = QPushButton("Load from folder")
         self.scan_button.clicked.connect(self.start_scan)
         row.addWidget(self.scan_button)
 
@@ -261,6 +278,11 @@ class MainWindow(QMainWindow):
 
         self.import_table = QTableWidget(0, 5)
         self.import_table.setHorizontalHeaderLabels(["Name", "Format", "Geometry", "Features", "Source"])
+        self.import_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.import_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.import_table.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.import_table.setSortingEnabled(True)
+        self.import_table.horizontalHeader().setSortIndicatorShown(True)
         self.import_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
         self.import_table.horizontalHeader().setSectionResizeMode(4, QHeaderView.Stretch)
         layout.addWidget(self.import_table, 1)
@@ -276,9 +298,13 @@ class MainWindow(QMainWindow):
     def _build_review_tab(self) -> None:
         layout = QVBoxLayout(self.review_tab)
 
-        self.review_actions_group_box = QGroupBox("AI & Sources")
+        self.review_actions_group_box = QGroupBox("Info & Sources")
         review_actions_box_layout = QVBoxLayout(self.review_actions_group_box)
         review_actions_layout = QHBoxLayout()
+        self.fast_info_button = QPushButton("Find info (fast)")
+        self.fast_info_button.clicked.connect(self.start_fast_info_for_scope)
+        review_actions_layout.addWidget(self.fast_info_button)
+
         self.run_ai_sources_button = QPushButton("Find info (AI)")
         self.run_ai_sources_button.clicked.connect(self.start_ai_for_scope)
         review_actions_layout.addWidget(self.run_ai_sources_button)
@@ -296,6 +322,7 @@ class MainWindow(QMainWindow):
         review_actions_box_layout.addLayout(review_actions_layout)
 
         self.review_actions_note = QLabel(
+            "Find info (fast) runs a local first-pass without external AI. "
             "Find info (AI) updates AI title, AI description and AI group. "
             "Find sources keeps the current understanding and refreshes source lookup only."
         )
@@ -481,8 +508,9 @@ class MainWindow(QMainWindow):
 
         row.addWidget(QLabel("Scope"))
         self.map_scope_combo = QComboBox()
-        self.map_scope_combo.addItem("Checked datasets", "checked")
-        self.map_scope_combo.addItem("All datasets", "all")
+        self.map_scope_combo.addItem("Visible on map", "visible")
+        self.map_scope_combo.addItem("Show all", "all")
+        self.map_scope_combo.currentIndexChanged.connect(lambda _index: self.refresh_map())
         row.addWidget(self.map_scope_combo)
 
         export_gpkg_button = QPushButton("Export GeoPackage")
@@ -703,18 +731,18 @@ class MainWindow(QMainWindow):
         self._remember_last_folder(folder)
         self._set_workspace(folder)
         self.import_progress.setValue(0)
-        self.append_activity_log(f"Scanning {folder}", activity="Scan Folder")
+        self.append_activity_log(f"Loading datasets from {folder}", activity="Load from folder")
         existing_records = self.repository.list_datasets() if self.repository is not None else []
         worker = FunctionWorker(self.ingest_service.scan_folder, folder, existing_records)
-        progress_token = self._begin_background_activity("Scanning folder...", activity="Scan Folder")
-        worker.signals.status.connect(lambda message: self.append_activity_log(message, activity="Scan Folder"))
+        progress_token = self._begin_background_activity("Loading from folder...", activity="Load from folder")
+        worker.signals.status.connect(lambda message: self.append_activity_log(message, activity="Load from folder"))
         worker.signals.progress.connect(self.import_progress.setValue)
         worker.signals.status.connect(lambda message, token=progress_token: self._update_background_activity_status(token, message))
         worker.signals.progress.connect(lambda value, token=progress_token: self._update_background_activity_progress(token, value))
         worker.signals.result.connect(self._schedule_scan_result)
         worker.signals.error.connect(lambda message, token=progress_token: self.on_background_error(message, token))
-        worker.signals.finished.connect(lambda token=progress_token: self._finish_background_activity(token, "Scan finished."))
-        worker.signals.finished.connect(lambda: self.statusBar().showMessage("Scan finished.", 5000))
+        worker.signals.finished.connect(lambda token=progress_token: self._finish_background_activity(token, "Load from folder finished."))
+        worker.signals.finished.connect(lambda: self.statusBar().showMessage("Load from folder finished.", 5000))
         self.thread_pool.start(worker)
 
     def _schedule_scan_result(self, datasets) -> None:
@@ -724,38 +752,30 @@ class MainWindow(QMainWindow):
         if self.repository is None:
             return
         sync_summary = self.repository.replace_datasets(datasets)
-        self.append_activity_log(f"Persisted {len(datasets)} dataset(s) to local catalog.", activity="Scan Folder")
+        self.append_activity_log(f"Persisted {len(datasets)} dataset(s) to local catalog.", activity="Load from folder")
         if sync_summary["reused_ids"]:
             self.append_activity_log(
                 f"Reused {len(sync_summary['reused_ids'])} unchanged dataset(s) from the existing catalog.",
-                activity="Scan Folder",
+                activity="Load from folder",
             )
         if sync_summary["removed_ids"]:
             self.append_activity_log(
                 f"Removed {len(sync_summary['removed_ids'])} dataset(s) no longer present in the source folder.",
-                activity="Scan Folder",
+                activity="Load from folder",
             )
-        self.append_activity_log("Applying scan results to the catalog and refreshing views.", activity="Scan Folder")
+        self.append_activity_log("Applying loaded datasets to the catalog and refreshing views.", activity="Load from folder")
         self.refresh_all_views()
         dataset_ids = sync_summary["changed_ids"]
         if dataset_ids:
             self.append_activity_log(
-                "Queued initial heuristic classification for new or changed datasets with a 1-minute time budget.",
-                activity="Initial Heuristic Classification",
-            )
-            self._start_worker_with_refresh(
-                self._heuristic_classify_dataset_ids,
-                dataset_ids,
-                "Initial heuristic classification of new or changed datasets completed.",
-                start_message="Running initial heuristic classification for new or changed datasets (max 1 minute)...",
-                activity_name="Initial Heuristic Classification",
+                f"{len(dataset_ids)} new or changed dataset(s) are ready for Find info (fast) in Review.",
+                activity="Load from folder",
             )
         else:
             self.append_activity_log(
                 "No new or changed datasets detected. Existing AI understanding and sources were kept.",
-                activity="Initial Heuristic Classification",
+                activity="Load from folder",
             )
-            self.append_activity_log("skipped", activity="Initial Heuristic Classification")
 
     def save_settings(self) -> None:
         try:
@@ -869,6 +889,29 @@ class MainWindow(QMainWindow):
         self.review_scope_combo.setCurrentIndex(self.review_scope_combo.findData("checked"))
         self.start_ai_for_scope()
 
+    def start_fast_info_for_scope(self) -> None:
+        if not self._ensure_review_job_can_start():
+            return
+        dataset_ids = self._dataset_ids_for_scope(self._review_scope())
+        if not dataset_ids:
+            QMessageBox.information(
+                self,
+                "Choose dataset",
+                "Check one or more datasets or switch scope to All datasets first.",
+            )
+            return
+        self.append_activity_log(
+            "Fast local classification runs without external AI and is intended as a quick first pass.",
+            activity="Fast Local Classification",
+        )
+        self._run_review_job_foreground_with_refresh(
+            self._heuristic_classify_dataset_ids,
+            dataset_ids,
+            "Fast local classification completed.",
+            start_message="Running fast local classification without external AI (max 1 minute)...",
+            activity_name="Fast Local Classification",
+        )
+
     def start_ai_for_scope(self) -> None:
         if not self._ensure_review_job_can_start():
             return
@@ -880,11 +923,14 @@ class MainWindow(QMainWindow):
                 "Check one or more datasets or switch scope to All datasets first.",
             )
             return
+        ai_runtime_note = self._ai_runtime_note(len(dataset_ids))
+        if ai_runtime_note:
+            self.append_activity_log(ai_runtime_note, activity="AI Understanding")
         self._start_worker_with_refresh(
             self._classify_dataset_ids,
             dataset_ids,
             "AI dataset understanding completed.",
-            start_message="Finding dataset information with AI...",
+            start_message="Finding dataset information with AI, one dataset at a time...",
             activity_name="AI Understanding",
         )
 
@@ -967,7 +1013,7 @@ class MainWindow(QMainWindow):
             QMessageBox.information(
                 self,
                 "Choose datasets",
-                "Check one or more datasets in Review or switch scope to All datasets first.",
+                "Mark one or more datasets as Visible on map, or switch scope to Show all first.",
             )
             return
         self._start_worker_with_refresh(
@@ -1056,6 +1102,7 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "Choose datasets", "Check one or more datasets first.")
             return
         self.repository.set_visibility_for_datasets(dataset_ids, True)
+        self.map_scope_combo.setCurrentIndex(self.map_scope_combo.findData("visible"))
         self.append_activity_log(
             f"Enabled map visibility for {len(dataset_ids)} checked dataset(s).",
             activity="Selection Actions",
@@ -1223,6 +1270,8 @@ class MainWindow(QMainWindow):
     def _dataset_ids_for_scope(self, scope: str) -> list[str]:
         if scope == "all":
             return [dataset.dataset_id for dataset in self._datasets()]
+        if scope == "visible":
+            return [dataset.dataset_id for dataset in self._datasets() if dataset.visibility]
         return self._checked_dataset_ids()
 
     def _review_scope(self) -> str:
@@ -1232,7 +1281,7 @@ class MainWindow(QMainWindow):
         return str(self.grouping_scope_combo.currentData() or "checked")
 
     def _map_scope(self) -> str:
-        return str(self.map_scope_combo.currentData() or "checked")
+        return str(self.map_scope_combo.currentData() or "visible")
 
     def _group_check_state(self, dataset_ids: list[str]):
         if not dataset_ids:
@@ -1356,13 +1405,41 @@ class MainWindow(QMainWindow):
 
     def refresh_import_table(self) -> None:
         datasets = self._datasets()
+        header = self.import_table.horizontalHeader()
+        sort_section = header.sortIndicatorSection()
+        sort_order = header.sortIndicatorOrder()
+        self.import_table.setSortingEnabled(False)
+        self.import_table.clearContents()
         self.import_table.setRowCount(len(datasets))
         for row_index, dataset in enumerate(datasets):
-            self.import_table.setItem(row_index, 0, QTableWidgetItem(dataset.preferred_name))
-            self.import_table.setItem(row_index, 1, QTableWidgetItem(dataset.source_format))
-            self.import_table.setItem(row_index, 2, QTableWidgetItem(dataset.geometry_type))
-            self.import_table.setItem(row_index, 3, QTableWidgetItem(str(dataset.feature_count)))
-            self.import_table.setItem(row_index, 4, QTableWidgetItem(dataset.source_path))
+            self.import_table.setItem(
+                row_index,
+                0,
+                SortableTableWidgetItem(dataset.preferred_name, dataset.preferred_name.lower()),
+            )
+            self.import_table.setItem(
+                row_index,
+                1,
+                SortableTableWidgetItem(dataset.source_format, dataset.source_format.lower()),
+            )
+            self.import_table.setItem(
+                row_index,
+                2,
+                SortableTableWidgetItem(dataset.geometry_type, dataset.geometry_type.lower()),
+            )
+            self.import_table.setItem(
+                row_index,
+                3,
+                SortableTableWidgetItem(str(dataset.feature_count), int(dataset.feature_count or 0)),
+            )
+            self.import_table.setItem(
+                row_index,
+                4,
+                SortableTableWidgetItem(dataset.source_path, dataset.source_path.lower()),
+            )
+        self.import_table.setSortingEnabled(True)
+        if sort_section >= 0:
+            self.import_table.sortItems(sort_section, sort_order)
         if self.repository is None:
             self.import_summary.setText("No folder loaded.")
         else:
@@ -1413,26 +1490,33 @@ class MainWindow(QMainWindow):
     def refresh_map(self) -> None:
         datasets = self._datasets()
         style_count = self.repository.summary()["style_count"] if self.repository is not None else 0
+        map_scope = self._map_scope()
+        map_dataset_ids = self._dataset_ids_for_scope(map_scope) if self.repository is not None else []
         self._map_refresh_pending = True
         if self.repository is None:
             self.map_summary.setText("No project loaded.")
             return
+        if self.map_bridge is not None:
+            self.map_bridge.set_scope(map_scope)
         if self._review_job_running:
             self.map_summary.setText(
-                f"Map layers available: {len(datasets)} | Styled: {style_count}. "
+                f"Map layers available: {len(map_dataset_ids)} of {len(datasets)} | Styled: {style_count}. "
                 "Map loading is paused while dataset processing is running."
             )
             return
         if not self._is_map_tab_active():
             self.map_summary.setText(
-                f"Map layers available: {len(datasets)} | Styled: {style_count}. "
+                f"Map layers available: {len(map_dataset_ids)} of {len(datasets)} | Styled: {style_count}. "
                 "Open the Map / Export tab to load the map in browse mode."
             )
             return
         self._ensure_map_ready()
+        if self.map_bridge is not None:
+            self.map_bridge.set_scope(map_scope)
+        scope_note = "using datasets marked Visible on map." if map_scope == "visible" else "showing all datasets."
         self.map_summary.setText(
-            f"Map layers available: {len(datasets)} | Styled: {style_count}. "
-            "Browse mode loads one layer at a time by default."
+            f"Map layers available: {len(map_dataset_ids)} of {len(datasets)} | Styled: {style_count}. "
+            f"Browse mode loads one layer at a time by default, {scope_note}"
         )
         if self.map_bridge is not None:
             self.map_bridge.publish_state()
@@ -1586,6 +1670,18 @@ class MainWindow(QMainWindow):
             return
         self.map_bridge = MapBridge(self.current_workspace, self.repository)
         page = self.map_view.page()
+        profile = page.profile() if hasattr(page, "profile") else None
+        if profile is not None:
+            if hasattr(profile, "setHttpUserAgent"):
+                profile.setHttpUserAgent(MAP_HTTP_USER_AGENT)
+            web_cache_dir = self.current_workspace.workspace_path / "web_cache"
+            web_profile_dir = self.current_workspace.workspace_path / "web_profile"
+            web_cache_dir.mkdir(parents=True, exist_ok=True)
+            web_profile_dir.mkdir(parents=True, exist_ok=True)
+            if hasattr(profile, "setCachePath"):
+                profile.setCachePath(str(web_cache_dir))
+            if hasattr(profile, "setPersistentStoragePath"):
+                profile.setPersistentStoragePath(str(web_profile_dir))
         if QWebEngineSettings is not None:
             settings = page.settings()
             for attribute_name in ("LocalContentCanAccessRemoteUrls", "LocalContentCanAccessFileUrls"):
@@ -1641,6 +1737,47 @@ class MainWindow(QMainWindow):
             track_review_job=True,
         )
 
+    def _run_review_job_foreground_with_refresh(
+        self,
+        fn,
+        dataset_ids: list[str],
+        success_message: str,
+        start_message: str = "Running background job...",
+        activity_name: str | None = None,
+    ) -> None:
+        log_activity = self._resolve_log_activity(activity_name or start_message)
+        progress_token = self._begin_background_activity(start_message, activity=log_activity)
+        self._review_job_running = True
+        self.review_progress.setValue(0)
+        self.review_job_status.setText("Starting background job...")
+        app = QApplication.instance()
+
+        def _pump_events() -> None:
+            if app is not None:
+                app.processEvents()
+
+        def _status_callback(message: str) -> None:
+            self.statusBar().showMessage(message)
+            self.append_activity_log(message, activity=log_activity)
+            self._update_background_activity_status(progress_token, message)
+            self.review_job_status.setText(message)
+            _pump_events()
+
+        def _progress_callback(value: int) -> None:
+            self._update_background_activity_progress(progress_token, value)
+            self.review_progress.setValue(value)
+            _pump_events()
+
+        try:
+            fn(dataset_ids, status_callback=_status_callback, progress_callback=_progress_callback)
+        except Exception:
+            self.on_background_error(traceback.format_exc(), progress_token)
+            return
+        self._refresh_all_views_after_worker(log_activity)
+        self._finish_background_activity(progress_token, success_message)
+        self.statusBar().showMessage(success_message, 5000)
+        self._on_review_job_finished(success_message)
+
     def _start_worker(
         self,
         fn,
@@ -1677,7 +1814,7 @@ class MainWindow(QMainWindow):
         return self._classify_dataset_ids_with_service(
             dataset_ids,
             self.heuristic_intelligence_service,
-            status_prefix="Heuristic classification",
+            status_prefix="Fast local classification",
             status_callback=status_callback,
             progress_callback=progress_callback,
             time_budget_s=INITIAL_HEURISTIC_CLASSIFICATION_TIMEOUT_S,
@@ -1687,7 +1824,7 @@ class MainWindow(QMainWindow):
         return self._classify_dataset_ids_with_service(
             dataset_ids,
             self.intelligence_service,
-            status_prefix="Classifying",
+            status_prefix="Finding info with AI",
             status_callback=status_callback,
             progress_callback=progress_callback,
         )
@@ -1709,14 +1846,22 @@ class MainWindow(QMainWindow):
             progress_callback(0)
         started_at = monotonic() if time_budget_s else None
         processed = 0
+        skipped_missing = 0
+        pending_updates: list[tuple[str, DatasetUnderstanding]] = []
+        provider = self._openai_provider_for_service(service)
+        last_logged_provider_issue = ""
         if status_callback and time_budget_s:
             status_callback(
-                f"{status_prefix} has a {self._format_elapsed_seconds(time_budget_s)} time budget for this automatic pass."
+                f"{status_prefix} has a {self._format_elapsed_seconds(time_budget_s)} time budget for this pass."
             )
         for index, dataset_id in enumerate(dataset_ids, start=1):
             if time_budget_s is not None and started_at is not None:
                 elapsed = monotonic() - started_at
                 if elapsed >= time_budget_s:
+                    self._flush_understanding_updates(
+                        pending_updates,
+                        status_callback=status_callback,
+                    )
                     remaining = max(0, total - processed)
                     if status_callback:
                         status_callback(
@@ -1726,25 +1871,123 @@ class MainWindow(QMainWindow):
                     break
             dataset = self.repository.get_dataset(dataset_id)
             if dataset is None:
+                skipped_missing += 1
                 if status_callback:
                     status_callback(f"Skipping missing dataset {index}/{total}: {dataset_id}")
                 continue
+            remote_available = provider.remote_availability_status()[0] if provider is not None else False
             if status_callback:
-                status_callback(f"{status_prefix} {index}/{total}: {dataset.preferred_name}")
+                if provider is not None and remote_available:
+                    status_callback(
+                        f"{status_prefix} {index}/{total}: {dataset.preferred_name} "
+                        f"(waiting for AI response)"
+                    )
+                elif provider is not None:
+                    status_callback(
+                        f"{status_prefix} {index}/{total}: {dataset.preferred_name} "
+                        f"(using heuristic fallback)"
+                    )
+                else:
+                    status_callback(f"{status_prefix} {index}/{total}: {dataset.preferred_name}")
             understanding = service.classify(dataset)
-            self.repository.upsert_understanding(dataset_id, understanding)
-            if dataset.group_id in {"", "ungrouped"} and understanding.suggested_group:
-                self.repository.assign_group(dataset_id, understanding.suggested_group)
+            provider_issue = self._consume_openai_provider_issue(provider)
+            if provider_issue and provider_issue != last_logged_provider_issue:
+                if status_callback:
+                    status_callback(provider_issue)
+                last_logged_provider_issue = provider_issue
+            pending_updates.append((dataset_id, understanding))
             processed += 1
             if progress_callback:
                 progress_callback(int((processed / max(total, 1)) * 100))
+            if len(pending_updates) >= UNDERSTANDING_PERSIST_BATCH_SIZE:
+                self._flush_understanding_updates(
+                    pending_updates,
+                    status_callback=status_callback,
+                )
+            if provider is not None and remote_available and index < total:
+                sleep(REMOTE_AI_REQUEST_COOLDOWN_S)
+        self._flush_understanding_updates(
+            pending_updates,
+            status_callback=status_callback,
+        )
         if progress_callback and total:
             progress_callback(100)
-        if status_callback and time_budget_s and processed < total:
-            status_callback(
-                f"{status_prefix} finished the automatic pass after processing {processed}/{total} dataset(s)."
-            )
+        if status_callback:
+            if time_budget_s and processed < total:
+                status_callback(
+                    f"{status_prefix} finished this pass after processing {processed}/{total} dataset(s)."
+                )
+            else:
+                summary = f"Completed {status_prefix.lower()} for {processed}/{total} dataset(s)."
+                if skipped_missing:
+                    summary += f" Skipped {skipped_missing} missing dataset(s)."
+                status_callback(summary)
         return processed
+
+    def _ai_runtime_note(self, dataset_count: int) -> str:
+        if dataset_count <= 0:
+            return ""
+        provider = self._openai_provider()
+        if provider is None:
+            return f"AI understanding will run sequentially for {dataset_count} dataset(s)."
+        remote_available, availability_message = provider.remote_availability_status()
+        if not remote_available:
+            return (
+                f"{availability_message} "
+                f"The requested job will use heuristic fallback for {dataset_count} dataset(s)."
+            )
+        timeout_s = getattr(provider, "timeout_s", None)
+        if timeout_s is None:
+            return f"AI understanding will run sequentially for {dataset_count} dataset(s)."
+        try:
+            timeout_value = max(0, int(round(float(timeout_s))))
+        except (TypeError, ValueError):
+            return f"AI understanding will run sequentially for {dataset_count} dataset(s)."
+        worst_case_seconds = timeout_value * dataset_count
+        return (
+            f"AI understanding will run sequentially for {dataset_count} dataset(s). "
+            f"Current per-dataset timeout is {timeout_value}s, so the worst-case upper bound is "
+            f"about {self._format_elapsed_seconds(worst_case_seconds)}. "
+            f"A short {REMOTE_AI_REQUEST_COOLDOWN_S:.2f}s cooldown is inserted between remote AI requests."
+        )
+
+    def _openai_provider(self) -> OpenAIClassificationProvider | None:
+        return self._openai_provider_for_service(self.intelligence_service)
+
+    def _openai_provider_for_service(self, service) -> OpenAIClassificationProvider | None:
+        if service is None:
+            return None
+        classifier = getattr(service, "classifier", None)
+        if isinstance(classifier, OpenAIClassificationProvider):
+            return classifier
+        if isinstance(service, OpenAIClassificationProvider):
+            return service
+        return None
+
+    def _consume_openai_provider_issue(self, provider: OpenAIClassificationProvider | None) -> str:
+        if provider is None:
+            return ""
+        issue = provider.consume_last_error_message()
+        if not issue:
+            return ""
+        return issue
+
+    def _flush_understanding_updates(
+        self,
+        pending_updates: list[tuple[str, DatasetUnderstanding]],
+        *,
+        status_callback=None,
+    ) -> None:
+        if not pending_updates or self.repository is None:
+            return
+        batch_size = len(pending_updates)
+        if status_callback:
+            status_callback(f"Persisting {batch_size} understanding update(s) to the catalog.")
+        self.repository.upsert_understandings_bulk(
+            pending_updates,
+            auto_assign_group=True,
+        )
+        pending_updates.clear()
 
     def _classify_and_search_dataset_ids(self, dataset_ids: list[str], *, status_callback=None, progress_callback=None) -> int:
         if self.repository is None:
