@@ -122,6 +122,7 @@ class ExportServiceTests(unittest.TestCase):
                         source_format="geojson",
                         geometry_type="Point",
                         feature_count=2,
+                        include_in_export=True,
                         column_profile_json='{"columns":[{"name":"name","dtype":"object","samples":["a"]}]}',
                         fingerprint="abc",
                         cache_path=str(cache_path),

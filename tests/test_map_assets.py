@@ -8,6 +8,9 @@ class MapAssetTests(unittest.TestCase):
     def test_leaflet_asset_includes_layer_extent_control(self) -> None:
         html = self._leaflet_map_html()
         self.assertIn('createBrowserButton("Extent"', html)
+        self.assertIn('modeLabel.textContent = "Map mode";', html)
+        self.assertIn('createBrowserButton("One layer at a time"', html)
+        self.assertIn('createBrowserButton("Show all selected layers"', html)
         self.assertIn("function zoomToCurrentLayerExtent()", html)
 
     def test_leaflet_asset_handles_resize_for_leaflet_and_offline_modes(self) -> None:

@@ -122,8 +122,11 @@ class MainWindow(QMainWindow):
         self.map_bridge: MapBridge | None = None
         self.map_channel = None
         self._populating_tree = False
+        self._populating_inspector = False
         self._checked_dataset_id_set: set[str] = set()
+        self._active_workers: dict[int, FunctionWorker] = {}
         self._map_initialized = False
+        self._map_page_ready = False
         self._map_refresh_pending = False
         self._review_job_running = False
         self._background_progress_token = 0
@@ -411,7 +414,7 @@ class MainWindow(QMainWindow):
         self.make_visible_button.clicked.connect(self.make_checked_visible_in_maps)
         dataset_actions_layout.addWidget(self.make_visible_button)
 
-        self.include_in_report_button = QPushButton("Include in report")
+        self.include_in_report_button = QPushButton("Include in export")
         self.include_in_report_button.clicked.connect(self.include_checked_in_report)
         dataset_actions_layout.addWidget(self.include_in_report_button)
         dataset_actions_layout.addStretch(1)
@@ -444,6 +447,8 @@ class MainWindow(QMainWindow):
 
         self.visibility_checkbox = QCheckBox("Visible on map")
         self.include_export_checkbox = QCheckBox("Include in export")
+        self.visibility_checkbox.toggled.connect(self._on_visibility_checkbox_toggled)
+        self.include_export_checkbox.toggled.connect(self._on_include_export_checkbox_toggled)
         dataset_form.addRow("", self.visibility_checkbox)
         dataset_form.addRow("", self.include_export_checkbox)
 
@@ -535,6 +540,8 @@ class MainWindow(QMainWindow):
 
         if WEBENGINE_AVAILABLE:
             self.map_view = QWebEngineView()
+            if hasattr(self.map_view, "loadFinished"):
+                self.map_view.loadFinished.connect(self._on_map_view_loaded)
         else:
             self.map_view = QPlainTextEdit()
             self.map_view.setReadOnly(True)
@@ -735,18 +742,27 @@ class MainWindow(QMainWindow):
         existing_records = self.repository.list_datasets() if self.repository is not None else []
         worker = FunctionWorker(self.ingest_service.scan_folder, folder, existing_records)
         progress_token = self._begin_background_activity("Loading from folder...", activity="Load from folder")
+        self._active_workers[progress_token] = worker
         worker.signals.status.connect(lambda message: self.append_activity_log(message, activity="Load from folder"))
         worker.signals.progress.connect(self.import_progress.setValue)
         worker.signals.status.connect(lambda message, token=progress_token: self._update_background_activity_status(token, message))
         worker.signals.progress.connect(lambda value, token=progress_token: self._update_background_activity_progress(token, value))
-        worker.signals.result.connect(self._schedule_scan_result)
+        worker.signals.result.connect(lambda datasets, token=progress_token: self._schedule_scan_result(token, datasets))
         worker.signals.error.connect(lambda message, token=progress_token: self.on_background_error(message, token))
-        worker.signals.finished.connect(lambda token=progress_token: self._finish_background_activity(token, "Load from folder finished."))
-        worker.signals.finished.connect(lambda: self.statusBar().showMessage("Load from folder finished.", 5000))
+        worker.signals.finished.connect(lambda token=progress_token: self._release_worker(token))
         self.thread_pool.start(worker)
 
-    def _schedule_scan_result(self, datasets) -> None:
-        QTimer.singleShot(0, lambda datasets=datasets: self.on_scan_result(datasets))
+    def _schedule_scan_result(self, token: int, datasets) -> None:
+        QTimer.singleShot(0, lambda token=token, datasets=datasets: self._complete_scan_result(token, datasets))
+
+    def _complete_scan_result(self, token: int, datasets) -> None:
+        try:
+            self._update_background_activity_status(token, "Finalizing loaded datasets in the catalog.")
+            self.on_scan_result(datasets)
+            self._finish_background_activity(token, "Load from folder finished.")
+            self.statusBar().showMessage("Load from folder finished.", 5000)
+        except Exception:
+            self.on_background_error(traceback.format_exc(), token)
 
     def on_scan_result(self, datasets) -> None:
         if self.repository is None:
@@ -858,8 +874,10 @@ class MainWindow(QMainWindow):
         self.map_bridge = None
         self.map_channel = None
         self._map_initialized = False
+        self._map_page_ready = False
         self._map_refresh_pending = False
         self._background_activity_names.clear()
+        self._active_workers.clear()
         self._active_background_progress_token = 0
         self._background_activity_started_at = None
         self._background_heartbeat_timer.stop()
@@ -1072,6 +1090,39 @@ class MainWindow(QMainWindow):
         )
         self.refresh_all_views()
 
+    def _on_visibility_checkbox_toggled(self, _checked: bool) -> None:
+        self._save_selected_dataset_flags()
+
+    def _on_include_export_checkbox_toggled(self, _checked: bool) -> None:
+        self._save_selected_dataset_flags()
+
+    def _save_selected_dataset_flags(self) -> None:
+        if self.repository is None or self._populating_inspector:
+            return
+        dataset_id = self.selected_dataset_id()
+        if not dataset_id:
+            return
+        stored = self.repository.get_dataset(dataset_id)
+        if stored is None:
+            return
+        visibility = self.visibility_checkbox.isChecked()
+        include_in_export = self.include_export_checkbox.isChecked()
+        if stored.visibility == visibility and stored.include_in_export == include_in_export:
+            return
+        self.repository.save_dataset_user_fields(
+            dataset_id,
+            display_name_user=stored.display_name_user,
+            description_user=stored.description_user,
+            visibility=visibility,
+            include_in_export=include_in_export,
+        )
+        updated = self.repository.get_dataset(dataset_id)
+        if updated is not None:
+            self.populate_inspector(updated)
+        self.refresh_tree()
+        self.refresh_map()
+        self.statusBar().showMessage("Dataset map/export flags updated.", 4000)
+
     def fill_checked_user_fields_from_ai(self) -> None:
         if self.repository is None:
             return
@@ -1119,10 +1170,10 @@ class MainWindow(QMainWindow):
             return
         self.repository.set_include_in_export_for_datasets(dataset_ids, True)
         self.append_activity_log(
-            f"Included {len(dataset_ids)} checked dataset(s) in report/export output.",
+            f"Included {len(dataset_ids)} checked dataset(s) in export output.",
             activity="Selection Actions",
         )
-        self.statusBar().showMessage(f"Included {len(dataset_ids)} dataset(s) in report/export.", 5000)
+        self.statusBar().showMessage(f"Included {len(dataset_ids)} dataset(s) in export.", 5000)
         self.refresh_all_views()
 
     def transfer_ai_to_checked(self) -> None:
@@ -1308,28 +1359,32 @@ class MainWindow(QMainWindow):
         return int(value)
 
     def populate_inspector(self, dataset) -> None:
-        if dataset is None:
-            self.dataset_name_edit.clear()
-            self.dataset_description_edit.clear()
-            self.visibility_checkbox.setChecked(False)
-            self.include_export_checkbox.setChecked(False)
-            self.source_path_label.setText("-")
-            self.geometry_label.setText("-")
-            self.feature_count_label.setText("-")
-            self.ai_title_label.setText("-")
-            self.ai_group_label.setText("-")
-            self.ai_description_box.setPlainText("")
-            return
-        self.dataset_name_edit.setText(dataset.display_name_user)
-        self.dataset_description_edit.setPlainText(dataset.description_user)
-        self.visibility_checkbox.setChecked(dataset.visibility)
-        self.include_export_checkbox.setChecked(dataset.include_in_export)
-        self.source_path_label.setText(dataset.source_path)
-        self.geometry_label.setText(dataset.geometry_type)
-        self.feature_count_label.setText(str(dataset.feature_count))
-        self.ai_title_label.setText(dataset.display_name_ai or "-")
-        self.ai_group_label.setText(dataset.suggested_group or "-")
-        self.ai_description_box.setPlainText(dataset.description_ai or "")
+        self._populating_inspector = True
+        try:
+            if dataset is None:
+                self.dataset_name_edit.clear()
+                self.dataset_description_edit.clear()
+                self.visibility_checkbox.setChecked(False)
+                self.include_export_checkbox.setChecked(False)
+                self.source_path_label.setText("-")
+                self.geometry_label.setText("-")
+                self.feature_count_label.setText("-")
+                self.ai_title_label.setText("-")
+                self.ai_group_label.setText("-")
+                self.ai_description_box.setPlainText("")
+                return
+            self.dataset_name_edit.setText(dataset.display_name_user)
+            self.dataset_description_edit.setPlainText(dataset.description_user)
+            self.visibility_checkbox.setChecked(dataset.visibility)
+            self.include_export_checkbox.setChecked(dataset.include_in_export)
+            self.source_path_label.setText(dataset.source_path)
+            self.geometry_label.setText(dataset.geometry_type)
+            self.feature_count_label.setText(str(dataset.feature_count))
+            self.ai_title_label.setText(dataset.display_name_ai or "-")
+            self.ai_group_label.setText(dataset.suggested_group or "-")
+            self.ai_description_box.setPlainText(dataset.description_ai or "")
+        finally:
+            self._populating_inspector = False
 
     def export_gpkg(self) -> None:
         if self.export_service is None or self.current_workspace is None:
@@ -1511,6 +1566,12 @@ class MainWindow(QMainWindow):
             )
             return
         self._ensure_map_ready()
+        if WEBENGINE_AVAILABLE and not self._map_page_ready:
+            self.map_summary.setText(
+                f"Map layers available: {len(map_dataset_ids)} of {len(datasets)} | Styled: {style_count}. "
+                "Preparing the embedded map renderer..."
+            )
+            return
         if self.map_bridge is not None:
             self.map_bridge.set_scope(map_scope)
         scope_note = "using datasets marked Visible on map." if map_scope == "visible" else "showing all datasets."
@@ -1568,6 +1629,7 @@ class MainWindow(QMainWindow):
         self.map_bridge = None
         self.map_channel = None
         self._map_initialized = False
+        self._map_page_ready = False
         self._map_refresh_pending = True
         self._load_activity_log()
         self._update_folder_actions()
@@ -1668,6 +1730,7 @@ class MainWindow(QMainWindow):
     def _setup_map_bridge(self) -> None:
         if not WEBENGINE_AVAILABLE or self.current_workspace is None or self.repository is None:
             return
+        self._map_page_ready = False
         self.map_bridge = MapBridge(self.current_workspace, self.repository)
         page = self.map_view.page()
         profile = page.profile() if hasattr(page, "profile") else None
@@ -1684,10 +1747,15 @@ class MainWindow(QMainWindow):
                 profile.setPersistentStoragePath(str(web_profile_dir))
         if QWebEngineSettings is not None:
             settings = page.settings()
-            for attribute_name in ("LocalContentCanAccessRemoteUrls", "LocalContentCanAccessFileUrls"):
+            for attribute_name, enabled in (
+                ("LocalContentCanAccessRemoteUrls", True),
+                ("LocalContentCanAccessFileUrls", True),
+                ("WebGLEnabled", False),
+                ("Accelerated2dCanvasEnabled", False),
+            ):
                 attribute = getattr(QWebEngineSettings, attribute_name, None)
                 if attribute is not None:
-                    settings.setAttribute(attribute, True)
+                    settings.setAttribute(attribute, enabled)
         self.map_channel = QWebChannel(page)
         self.map_channel.registerObject("mapBridge", self.map_bridge)
         page.setWebChannel(self.map_channel)
@@ -1708,11 +1776,21 @@ class MainWindow(QMainWindow):
         if not self._is_map_tab_active():
             return
         self.refresh_map()
-        if self._map_initialized and WEBENGINE_AVAILABLE and hasattr(self.map_view, "page"):
+        if self._map_initialized and self._map_page_ready and WEBENGINE_AVAILABLE and hasattr(self.map_view, "page"):
             try:
                 self.map_view.page().runJavaScript("window.dispatchEvent(new Event('resize'));")
             except Exception:
                 pass
+
+    def _on_map_view_loaded(self, ok: bool) -> None:
+        self._map_page_ready = bool(ok)
+        if not ok:
+            self.append_activity_log("Embedded map page failed to load.", activity="Map")
+            self.map_summary.setText("The embedded map page failed to load. Try Refresh Map or restart the app.")
+            return
+        self.append_activity_log("Embedded map page loaded.", activity="Map")
+        if self._map_refresh_pending and self._is_map_tab_active() and not self._review_job_running:
+            self.refresh_map()
 
     def _datasets(self):
         if self.repository is None:
@@ -1791,6 +1869,7 @@ class MainWindow(QMainWindow):
         worker = FunctionWorker(fn, *args)
         log_activity = self._resolve_log_activity(activity_name or start_message)
         progress_token = self._begin_background_activity(start_message, activity=log_activity)
+        self._active_workers[progress_token] = worker
         worker.signals.status.connect(self.statusBar().showMessage)
         worker.signals.status.connect(lambda message, activity=log_activity: self.append_activity_log(message, activity=activity))
         worker.signals.status.connect(lambda message, token=progress_token: self._update_background_activity_status(token, message))
@@ -1802,12 +1881,17 @@ class MainWindow(QMainWindow):
             worker.signals.status.connect(self.review_job_status.setText)
             worker.signals.progress.connect(self.review_progress.setValue)
         worker.signals.error.connect(lambda message, token=progress_token: self.on_background_error(message, token))
-        worker.signals.finished.connect(lambda token=progress_token, message=success_message: self._finish_background_activity(token, message))
-        worker.signals.finished.connect(lambda: self.statusBar().showMessage(success_message, 5000))
-        if track_review_job:
-            worker.signals.finished.connect(lambda: self._on_review_job_finished(success_message))
-        if refresh_after:
-            worker.signals.result.connect(lambda _value, activity=log_activity: self._schedule_refresh_all_views_after_worker(activity))
+        worker.signals.result.connect(
+            lambda _value, token=progress_token, activity=log_activity, message=success_message, needs_refresh=refresh_after, review_job=track_review_job:
+            self._complete_worker_success(
+                token,
+                message,
+                activity=activity,
+                refresh_after=needs_refresh,
+                track_review_job=review_job,
+            )
+        )
+        worker.signals.finished.connect(lambda token=progress_token: self._release_worker(token))
         self.thread_pool.start(worker)
 
     def _heuristic_classify_dataset_ids(self, dataset_ids: list[str], *, status_callback=None, progress_callback=None) -> int:
@@ -2081,6 +2165,7 @@ class MainWindow(QMainWindow):
         prepared_dataset_ids: set[str] = set()
         timed_out_dataset_ids: list[str] = []
         refreshed_hint_count = 0
+        hint_updates: list[tuple[str, object]] = []
         total = len(dataset_ids)
         if progress_callback:
             progress_callback(0)
@@ -2108,13 +2193,21 @@ class MainWindow(QMainWindow):
                 if status_callback:
                     status_callback(f"Preparing grouping hints {index}/{total}: {dataset.preferred_name}")
                 understanding = self.heuristic_intelligence_service.classify(dataset)
-                self.repository.upsert_understanding(dataset_id, understanding)
-                dataset = self.repository.get_dataset(dataset_id) or dataset
+                hint_updates.append((dataset_id, understanding))
+                dataset.display_name_ai = understanding.suggested_title
+                dataset.description_ai = understanding.suggested_description
+                dataset.suggested_group = understanding.suggested_group
+                dataset.ai_confidence = float(understanding.confidence or 0.0)
                 refreshed_hint_count += 1
             datasets.append(dataset)
             prepared_dataset_ids.add(dataset.dataset_id)
             if progress_callback:
                 progress_callback(int((index / max(total, 1)) * 35))
+
+        if hint_updates:
+            if status_callback:
+                status_callback(f"Persisting {len(hint_updates)} grouping hint update(s) to the catalog.")
+            self.repository.upsert_understandings_bulk(hint_updates)
 
         if status_callback and datasets:
             reused_count = max(0, len(datasets) - refreshed_hint_count)
@@ -2150,9 +2243,10 @@ class MainWindow(QMainWindow):
                         f"Waiting for grouping response (max {self._format_elapsed_seconds(remaining_grouping_budget_s)} remaining). "
                         f"Any unassigned dataset(s) will be placed in {REGROUP_OTHERS_GROUP_NAME}."
                     )
-                raw_assignments = self._group_datasets_with_timeout(
+                raw_assignments = self._group_datasets_for_regroup(
                     datasets,
                     target_group_count,
+                    status_callback=status_callback,
                     timeout_s=remaining_grouping_budget_s,
                 )
                 if progress_callback:
@@ -2233,12 +2327,45 @@ class MainWindow(QMainWindow):
         except TypeError:
             return grouper(datasets, target_group_count)
 
+    def _group_datasets_for_regroup(
+        self,
+        datasets: list,
+        target_group_count: int,
+        *,
+        status_callback=None,
+        timeout_s: float | None,
+    ) -> dict[str, str]:
+        classifier = getattr(self.intelligence_service, "classifier", None)
+        availability_checker = getattr(classifier, "remote_availability_status", None)
+        consume_last_error_message = getattr(classifier, "consume_last_error_message", None)
+        if callable(availability_checker):
+            remote_available, message = availability_checker()
+            if not remote_available:
+                if status_callback and message:
+                    status_callback(f"{message} Using local grouping fallback.")
+                return self.heuristic_intelligence_service.group_datasets(
+                    datasets,
+                    target_group_count,
+                    timeout_s=timeout_s,
+                )
+        assignments = self._group_datasets_with_timeout(
+            datasets,
+            target_group_count,
+            timeout_s=timeout_s,
+        )
+        if callable(consume_last_error_message):
+            last_error = str(consume_last_error_message() or "").strip()
+            if last_error and status_callback:
+                status_callback(f"{last_error} Using local grouping fallback where needed.")
+        return assignments
+
     def on_background_error(self, message: str, progress_token: int | None = None) -> None:
         self.append_activity_log(message)
         self.review_job_status.setText("Background job failed.")
         self._review_job_running = False
         if progress_token is not None:
             self._finish_background_activity(progress_token, "Background job failed.")
+            self._release_worker(progress_token)
         QMessageBox.warning(self, "Background job failed", message.splitlines()[-1] if message else "Unknown error")
 
     def _on_review_job_finished(self, success_message: str) -> None:
@@ -2253,6 +2380,35 @@ class MainWindow(QMainWindow):
 
     def _schedule_refresh_all_views_after_worker(self, activity: str) -> None:
         QTimer.singleShot(0, lambda activity=activity: self._refresh_all_views_after_worker(activity))
+
+    def _complete_worker_success(
+        self,
+        token: int,
+        success_message: str,
+        *,
+        activity: str,
+        refresh_after: bool,
+        track_review_job: bool,
+    ) -> None:
+        def _finalize_success() -> None:
+            try:
+                if refresh_after:
+                    self._update_background_activity_status(token, "Applying results to the catalog and refreshing views.")
+                    self._refresh_all_views_after_worker(activity)
+                self._finish_background_activity(token, success_message)
+                self.statusBar().showMessage(success_message, 5000)
+                if track_review_job:
+                    self._on_review_job_finished(success_message)
+            except Exception:
+                self.on_background_error(traceback.format_exc(), token)
+
+        if refresh_after:
+            QTimer.singleShot(0, _finalize_success)
+        else:
+            _finalize_success()
+
+    def _release_worker(self, token: int) -> None:
+        self._active_workers.pop(token, None)
 
     def _begin_background_activity(self, label: str, activity: str | None = None) -> int:
         self._background_progress_token += 1
@@ -2290,11 +2446,13 @@ class MainWindow(QMainWindow):
         self.append_activity_log("ending", activity=activity_name)
         self._background_activity_names.pop(token, None)
         self._background_activity_last_status.pop(token, None)
+        self._release_worker(token)
         self._active_background_progress_token = 0
         self._background_activity_progress_value = None
         self._background_activity_started_at = None
         self._background_activity_worker_signal_at = None
         self._background_heartbeat_timer.stop()
+        self._release_worker(token)
         self._set_log_button_live(False)
 
     def _build_log_window(self) -> None:

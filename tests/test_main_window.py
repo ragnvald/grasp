@@ -150,7 +150,7 @@ class MainWindowTests(unittest.TestCase):
                 self.assertEqual(window.save_dataset_button.text(), "Save Changes")
                 self.assertEqual(window.fill_ai_fields_button.text(), "Fill Empty Fields from AI")
                 self.assertEqual(window.make_visible_button.text(), "Make visible in maps")
-                self.assertEqual(window.include_in_report_button.text(), "Include in report")
+                self.assertEqual(window.include_in_report_button.text(), "Include in export")
                 self.assertEqual(window.transfer_ai_selected_button.maximumWidth(), 220)
                 self.assertEqual(window.save_dataset_button.maximumWidth(), 150)
                 self.assertIn("find info (fast) runs a local first-pass", window.review_actions_note.text().lower())
@@ -562,12 +562,35 @@ class MainWindowTests(unittest.TestCase):
                     cache_path="auto1.parquet",
                 )
                 with patch("grasp.ui.main_window.QTimer.singleShot") as single_shot:
-                    window._schedule_scan_result([dataset])
+                    window._schedule_scan_result(7, [dataset])
 
                 self.assertEqual(single_shot.call_count, 1)
                 delay_ms, scheduled_fn = single_shot.call_args.args
                 self.assertEqual(delay_ms, 0)
                 self.assertTrue(callable(scheduled_fn))
+            finally:
+                window.close()
+
+    def test_complete_scan_result_finishes_background_activity_after_catalog_refresh(self) -> None:
+        with patch("grasp.ui.main_window.WEBENGINE_AVAILABLE", False):
+            window = MainWindow()
+            try:
+                with tempfile.TemporaryDirectory() as tmp:
+                    window._set_workspace(tmp)
+                    token = window._begin_background_activity("Loading from folder...", activity="Load from folder")
+                    dataset = DatasetRecord(
+                        dataset_id="auto1",
+                        source_path="D:/data/auto1.geojson",
+                        source_format="geojson",
+                        cache_path="auto1.parquet",
+                        fingerprint="abc",
+                    )
+
+                    window._complete_scan_result(token, [dataset])
+
+                    self.assertEqual(window._active_background_progress_token, 0)
+                    self.assertEqual(window.log_button.text(), "Logs")
+                    self.assertIn("[Load from folder] - ending", window.log_text.toPlainText())
             finally:
                 window.close()
 
@@ -661,6 +684,63 @@ class MainWindowTests(unittest.TestCase):
 
                     self.assertTrue(window._map_initialized)
                     self.assertFalse(window._map_refresh_pending)
+            finally:
+                window.close()
+
+    def test_refresh_map_waits_for_webengine_page_before_publishing_state(self) -> None:
+        with patch("grasp.ui.main_window.WEBENGINE_AVAILABLE", False):
+            window = MainWindow()
+            try:
+                with tempfile.TemporaryDirectory() as tmp:
+                    window._set_workspace(tmp)
+                    window.repository.replace_datasets(
+                        [
+                            DatasetRecord(
+                                dataset_id="ds1",
+                                source_path="D:/data/roads.geojson",
+                                source_format="geojson",
+                                geometry_type="LineString",
+                                feature_count=2,
+                                fingerprint="abc",
+                                cache_path="data_out/cache/datasets/ds1.parquet",
+                                visibility=True,
+                            )
+                        ]
+                    )
+                    window._map_initialized = True
+                    window._map_page_ready = False
+                    calls: list[str] = []
+                    window.map_bridge = SimpleNamespace(
+                        set_scope=lambda scope: calls.append(f"scope:{scope}"),
+                        publish_state=lambda: calls.append("publish"),
+                    )
+
+                    with patch("grasp.ui.main_window.WEBENGINE_AVAILABLE", True):
+                        window.tabs.setCurrentWidget(window.map_tab)
+                        window.refresh_map()
+
+                    self.assertIn("Preparing the embedded map renderer", window.map_summary.text())
+                    self.assertIn("scope:visible", calls)
+                    self.assertNotIn("publish", calls)
+                    self.assertTrue(window._map_refresh_pending)
+            finally:
+                window.close()
+
+    def test_map_page_loaded_triggers_pending_refresh(self) -> None:
+        with patch("grasp.ui.main_window.WEBENGINE_AVAILABLE", False):
+            window = MainWindow()
+            try:
+                window._map_refresh_pending = True
+                window.tabs.setCurrentWidget(window.map_tab)
+                window._review_job_running = False
+                calls: list[str] = []
+                window.refresh_map = lambda: calls.append("refresh")
+
+                window._on_map_view_loaded(True)
+
+                self.assertTrue(window._map_page_ready)
+                self.assertEqual(calls, ["refresh"])
+                self.assertIn("[Map] - Embedded map page loaded.", window.log_text.toPlainText())
             finally:
                 window.close()
 
@@ -1075,6 +1155,7 @@ class MainWindowTests(unittest.TestCase):
                                 source_path="D:/data/a.geojson",
                                 source_format="geojson",
                                 visibility=False,
+                                include_in_export=False,
                                 cache_path="a.parquet",
                             ),
                             DatasetRecord(
@@ -1082,6 +1163,7 @@ class MainWindowTests(unittest.TestCase):
                                 source_path="D:/data/b.geojson",
                                 source_format="geojson",
                                 visibility=False,
+                                include_in_export=False,
                                 cache_path="b.parquet",
                             ),
                         ]
@@ -1095,7 +1177,42 @@ class MainWindowTests(unittest.TestCase):
 
                     self.assertTrue(window.repository.get_dataset("a").visibility)
                     self.assertFalse(window.repository.get_dataset("b").visibility)
+                    self.assertFalse(window.repository.get_dataset("a").include_in_export)
+                    self.assertFalse(window.repository.get_dataset("b").include_in_export)
                     self.assertEqual(window._map_scope(), "visible")
+            finally:
+                window.close()
+
+    def test_visibility_checkbox_persists_immediately_for_selected_dataset(self) -> None:
+        with patch("grasp.ui.main_window.WEBENGINE_AVAILABLE", False):
+            window = MainWindow()
+            try:
+                with tempfile.TemporaryDirectory() as tmp:
+                    window._set_workspace(tmp)
+                    window.repository.replace_datasets(
+                        [
+                            DatasetRecord(
+                                dataset_id="a",
+                                source_path="D:/data/a.geojson",
+                                source_format="geojson",
+                                visibility=False,
+                                include_in_export=False,
+                                cache_path="a.parquet",
+                            )
+                        ]
+                    )
+
+                    window.refresh_all_views()
+                    first_group = window.tree.topLevelItem(0)
+                    window.tree.setCurrentItem(first_group.child(0))
+
+                    window.visibility_checkbox.setChecked(True)
+                    window.include_export_checkbox.setChecked(True)
+
+                    stored = window.repository.get_dataset("a")
+                    self.assertIsNotNone(stored)
+                    self.assertTrue(stored.visibility)
+                    self.assertTrue(stored.include_in_export)
             finally:
                 window.close()
 
@@ -1348,6 +1465,33 @@ class MainWindowTests(unittest.TestCase):
                     self.assertAlmostEqual(captured["timeout_s"], 110.0, places=2)
                     self.assertTrue(
                         any("Waiting for grouping response (max 01:50 remaining)." in message for message in messages)
+                    )
+            finally:
+                window.close()
+
+    def test_regroup_uses_local_grouping_when_openai_is_unavailable(self) -> None:
+        with patch("grasp.ui.main_window.WEBENGINE_AVAILABLE", False):
+            window = MainWindow()
+            try:
+                with tempfile.TemporaryDirectory() as tmp:
+                    window._set_workspace(tmp)
+                    window.repository.replace_datasets(
+                        [
+                            DatasetRecord(dataset_id="a", source_path="D:/data/a.geojson", source_format="geojson", layer_name="Protected Area", cache_path="a.parquet"),
+                            DatasetRecord(dataset_id="b", source_path="D:/data/b.geojson", source_format="geojson", layer_name="Coastal Buffer", cache_path="b.parquet"),
+                        ]
+                    )
+                    messages: list[str] = []
+
+                    regrouped = window._regroup_dataset_ids(["a", "b"], 2, status_callback=messages.append)
+
+                    self.assertEqual(regrouped, 2)
+                    self.assertTrue(
+                        any(
+                            "OpenAI API key is missing. Configure it in Settings to use Find info (AI). Using local grouping fallback."
+                            in message
+                            for message in messages
+                        )
                     )
             finally:
                 window.close()

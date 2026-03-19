@@ -21,6 +21,7 @@ Thumbs.db
 data_out/
 data/
 artifacts/
+.vendor/
 
 # Test and runtime leftovers
 *.log
@@ -31,4 +32,3 @@ artifacts/
 # PyInstaller / build
 build/
 dist/
-

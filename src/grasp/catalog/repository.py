@@ -42,7 +42,7 @@ CREATE TABLE IF NOT EXISTS datasets (
     group_id TEXT NOT NULL DEFAULT 'ungrouped',
     sort_order INTEGER NOT NULL DEFAULT 0,
     visibility INTEGER NOT NULL DEFAULT 1,
-    include_in_export INTEGER NOT NULL DEFAULT 1,
+    include_in_export INTEGER NOT NULL DEFAULT 0,
     cache_path TEXT NOT NULL DEFAULT '',
     ai_confidence REAL NOT NULL DEFAULT 0,
     suggested_group TEXT NOT NULL DEFAULT '',

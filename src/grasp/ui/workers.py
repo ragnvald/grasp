@@ -17,6 +17,8 @@ class WorkerSignals(QObject):
 class FunctionWorker(QRunnable):
     def __init__(self, fn, *args, **kwargs) -> None:
         super().__init__()
+        if hasattr(self, "setAutoDelete"):
+            self.setAutoDelete(False)
         self.fn = fn
         self.args = args
         self.kwargs = kwargs

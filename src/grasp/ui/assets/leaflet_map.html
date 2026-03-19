@@ -154,11 +154,26 @@
       box-shadow: 0 10px 24px rgba(0, 0, 0, 0.12);
       max-width: calc(100% - 32px);
     }
+    .layer-browser .mode-block,
     .layer-browser .mode-buttons,
     .layer-browser .nav-buttons {
       display: flex;
       align-items: center;
       gap: 6px;
+    }
+    .layer-browser .mode-block {
+      flex-direction: column;
+      align-items: stretch;
+      gap: 4px;
+      min-width: 178px;
+    }
+    .layer-browser .mode-label {
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      color: #6b7d86;
+      text-align: center;
     }
     .layer-browser button {
       border: 1px solid rgba(45, 67, 77, 0.18);
@@ -699,17 +714,25 @@
       layerBrowser = document.createElement("div");
       layerBrowser.className = "layer-browser";
 
+      const modeBlock = document.createElement("div");
+      modeBlock.className = "mode-block";
+      const modeLabel = document.createElement("div");
+      modeLabel.className = "mode-label";
+      modeLabel.textContent = "Map mode";
+      modeBlock.appendChild(modeLabel);
+
       const modeButtons = document.createElement("div");
       modeButtons.className = "mode-buttons";
-      browseModeButton = createBrowserButton("Browse", function(){
+      browseModeButton = createBrowserButton("One layer at a time", function(){
         setMapMode("browse");
       });
-      visibleModeButton = createBrowserButton("Visible", function(){
+      visibleModeButton = createBrowserButton("Show all selected layers", function(){
         setMapMode("visible");
       });
       modeButtons.appendChild(browseModeButton);
       modeButtons.appendChild(visibleModeButton);
-      layerBrowser.appendChild(modeButtons);
+      modeBlock.appendChild(modeButtons);
+      layerBrowser.appendChild(modeBlock);
 
       const navButtons = document.createElement("div");
       navButtons.className = "nav-buttons";

@@ -26,7 +26,7 @@ class DatasetRecord:
     group_id: str = "ungrouped"
     sort_order: int = 0
     visibility: bool = True
-    include_in_export: bool = True
+    include_in_export: bool = False
     cache_path: str = ""
     ai_confidence: float = 0.0
     suggested_group: str = ""
@@ -67,7 +67,7 @@ class DatasetRecord:
     def from_row(cls, row: dict[str, Any]) -> "DatasetRecord":
         data = dict(row)
         data["visibility"] = bool(data.get("visibility", 1))
-        data["include_in_export"] = bool(data.get("include_in_export", 1))
+        data["include_in_export"] = bool(data.get("include_in_export", 0))
         data["bbox_wgs84"] = json.loads(data.get("bbox_wgs84") or "[]")
         return cls(**data)
 
