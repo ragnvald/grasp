@@ -81,6 +81,9 @@ REVIEW_JOB_STALE_LOCK_TIMEOUT_S = 300.0
 REMOTE_AI_REQUEST_COOLDOWN_S = 0.35
 UNDERSTANDING_PERSIST_BATCH_SIZE = 24
 MAP_HTTP_USER_AGENT = "GRASP-Desktop (+https://github.com/ragnvald/grasp)"
+# These labels reflect the current archive-oriented wording requested for the import flow.
+LOAD_ARCHIVE_LABEL = "Load data fom archive"
+REBUILD_ARCHIVE_LABEL = "Rebuild archive"
 
 
 class DatasetTreeWidget(QTreeWidget):
@@ -219,11 +222,11 @@ class MainWindow(QMainWindow):
         browse_action.triggered.connect(self.browse_folder)
         file_menu.addAction(browse_action)
 
-        self.load_existing_action = QAction("Load Existing", self)
+        self.load_existing_action = QAction(LOAD_ARCHIVE_LABEL, self)
         self.load_existing_action.triggered.connect(self.load_existing_catalog)
         file_menu.addAction(self.load_existing_action)
 
-        scan_action = QAction("Load from folder", self)
+        scan_action = QAction(REBUILD_ARCHIVE_LABEL, self)
         scan_action.triggered.connect(self.start_scan)
         file_menu.addAction(scan_action)
 
@@ -259,11 +262,11 @@ class MainWindow(QMainWindow):
         self.browse_button.clicked.connect(self.browse_folder)
         row.addWidget(self.browse_button)
 
-        self.scan_button = QPushButton("Load from folder")
+        self.scan_button = QPushButton(REBUILD_ARCHIVE_LABEL)
         self.scan_button.clicked.connect(self.start_scan)
         row.addWidget(self.scan_button)
 
-        self.load_existing_button = QPushButton("Load Existing")
+        self.load_existing_button = QPushButton(LOAD_ARCHIVE_LABEL)
         self.load_existing_button.clicked.connect(self.load_existing_catalog)
         row.addWidget(self.load_existing_button)
 
@@ -724,7 +727,7 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "Catalog missing", "No local catalog exists yet for this folder. Run a scan first.")
             return
         self._set_workspace(folder)
-        self.append_activity_log(f"Loaded existing catalog from {workspace.db_path}", activity="Load Existing")
+        self.append_activity_log(f"Loaded existing catalog from {workspace.db_path}", activity=LOAD_ARCHIVE_LABEL)
         self.refresh_all_views()
 
     def start_scan(self) -> None:
@@ -738,12 +741,12 @@ class MainWindow(QMainWindow):
         self._remember_last_folder(folder)
         self._set_workspace(folder)
         self.import_progress.setValue(0)
-        self.append_activity_log(f"Loading datasets from {folder}", activity="Load from folder")
+        self.append_activity_log(f"Loading datasets from {folder}", activity=REBUILD_ARCHIVE_LABEL)
         existing_records = self.repository.list_datasets() if self.repository is not None else []
         worker = FunctionWorker(self.ingest_service.scan_folder, folder, existing_records)
-        progress_token = self._begin_background_activity("Loading from folder...", activity="Load from folder")
+        progress_token = self._begin_background_activity("Rebuilding archive...", activity=REBUILD_ARCHIVE_LABEL)
         self._active_workers[progress_token] = worker
-        worker.signals.status.connect(lambda message: self.append_activity_log(message, activity="Load from folder"))
+        worker.signals.status.connect(lambda message: self.append_activity_log(message, activity=REBUILD_ARCHIVE_LABEL))
         worker.signals.progress.connect(self.import_progress.setValue)
         worker.signals.status.connect(lambda message, token=progress_token: self._update_background_activity_status(token, message))
         worker.signals.progress.connect(lambda value, token=progress_token: self._update_background_activity_progress(token, value))
@@ -759,8 +762,8 @@ class MainWindow(QMainWindow):
         try:
             self._update_background_activity_status(token, "Finalizing loaded datasets in the catalog.")
             self.on_scan_result(datasets)
-            self._finish_background_activity(token, "Load from folder finished.")
-            self.statusBar().showMessage("Load from folder finished.", 5000)
+            self._finish_background_activity(token, "Rebuild archive finished.")
+            self.statusBar().showMessage("Rebuild archive finished.", 5000)
         except Exception:
             self.on_background_error(traceback.format_exc(), token)
 
@@ -768,29 +771,29 @@ class MainWindow(QMainWindow):
         if self.repository is None:
             return
         sync_summary = self.repository.replace_datasets(datasets)
-        self.append_activity_log(f"Persisted {len(datasets)} dataset(s) to local catalog.", activity="Load from folder")
+        self.append_activity_log(f"Persisted {len(datasets)} dataset(s) to local catalog.", activity=REBUILD_ARCHIVE_LABEL)
         if sync_summary["reused_ids"]:
             self.append_activity_log(
                 f"Reused {len(sync_summary['reused_ids'])} unchanged dataset(s) from the existing catalog.",
-                activity="Load from folder",
+                activity=REBUILD_ARCHIVE_LABEL,
             )
         if sync_summary["removed_ids"]:
             self.append_activity_log(
                 f"Removed {len(sync_summary['removed_ids'])} dataset(s) no longer present in the source folder.",
-                activity="Load from folder",
+                activity=REBUILD_ARCHIVE_LABEL,
             )
-        self.append_activity_log("Applying loaded datasets to the catalog and refreshing views.", activity="Load from folder")
+        self.append_activity_log("Applying loaded datasets to the catalog and refreshing views.", activity=REBUILD_ARCHIVE_LABEL)
         self.refresh_all_views()
         dataset_ids = sync_summary["changed_ids"]
         if dataset_ids:
             self.append_activity_log(
                 f"{len(dataset_ids)} new or changed dataset(s) are ready for Find info (fast) in Review.",
-                activity="Load from folder",
+                activity=REBUILD_ARCHIVE_LABEL,
             )
         else:
             self.append_activity_log(
                 "No new or changed datasets detected. Existing AI understanding and sources were kept.",
-                activity="Load from folder",
+                activity=REBUILD_ARCHIVE_LABEL,
             )
 
     def save_settings(self) -> None:

@@ -127,8 +127,8 @@ class MainWindowTests(unittest.TestCase):
                 self.assertEqual([window.tabs.tabText(index) for index in range(window.tabs.count())], ["Import", "Review", "Map / Export", "Settings", "About"])
                 self.assertEqual(window.datasets_group_box.title(), "Datasets")
                 self.assertEqual(window.browse_button.text(), "Browse")
-                self.assertEqual(window.scan_button.text(), "Load from folder")
-                self.assertEqual(window.load_existing_button.text(), "Load Existing")
+                self.assertEqual(window.scan_button.text(), "Rebuild archive")
+                self.assertEqual(window.load_existing_button.text(), "Load data fom archive")
                 self.assertEqual(window.reset_data_button.text(), "Reset All Data")
                 self.assertEqual(window.review_actions_group_box.title(), "Info & Sources")
                 self.assertEqual(window.selection_group_box.title(), "Selection")
@@ -487,7 +487,7 @@ class MainWindowTests(unittest.TestCase):
             try:
                 with tempfile.TemporaryDirectory() as tmp:
                     window._set_workspace(tmp)
-                    window.append_activity_log("Loaded catalog.", activity="Load Existing")
+                    window.append_activity_log("Loaded catalog.", activity="Load data fom archive")
 
                     log_path = Path(tmp) / "data_out" / "log.txt"
 
@@ -495,7 +495,7 @@ class MainWindowTests(unittest.TestCase):
                     contents = log_path.read_text(encoding="utf-8")
                     self.assertRegex(
                         contents,
-                        r"^\[\d{4}\.\d{2}\.\d{2} \d{2}:\d{2}:\d{2}\] \[Load Existing\] - Loaded catalog\.\n?$",
+                        r"^\[\d{4}\.\d{2}\.\d{2} \d{2}:\d{2}:\d{2}\] \[Load data fom archive\] - Loaded catalog\.\n?$",
                     )
             finally:
                 window.close()
@@ -577,7 +577,7 @@ class MainWindowTests(unittest.TestCase):
             try:
                 with tempfile.TemporaryDirectory() as tmp:
                     window._set_workspace(tmp)
-                    token = window._begin_background_activity("Loading from folder...", activity="Load from folder")
+                    token = window._begin_background_activity("Rebuilding archive...", activity="Rebuild archive")
                     dataset = DatasetRecord(
                         dataset_id="auto1",
                         source_path="D:/data/auto1.geojson",
@@ -590,7 +590,7 @@ class MainWindowTests(unittest.TestCase):
 
                     self.assertEqual(window._active_background_progress_token, 0)
                     self.assertEqual(window.log_button.text(), "Logs")
-                    self.assertIn("[Load from folder] - ending", window.log_text.toPlainText())
+                    self.assertIn("[Rebuild archive] - ending", window.log_text.toPlainText())
             finally:
                 window.close()
 
