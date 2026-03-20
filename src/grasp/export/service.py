@@ -8,6 +8,8 @@ import sqlite3
 
 import geopandas as gpd
 import pandas as pd
+import pyarrow.parquet as pq
+from geopandas.io.arrow import _geopandas_to_arrow
 
 from grasp.catalog.repository import CatalogRepository
 from grasp.ingest.service import IngestService
@@ -83,12 +85,13 @@ class ExportService:
         target = Path(path)
         target.parent.mkdir(parents=True, exist_ok=True)
         datasets = [dataset for dataset in self.repository.list_datasets() if dataset.include_in_export]
-        rows: list[gpd.GeoDataFrame] = []
         selected_sources = {dataset.dataset_id: self._selected_source(dataset.dataset_id) for dataset in datasets}
         group_lookup = dict(self.repository.list_groups())
+        writer: pq.ParquetWriter | None = None
         for dataset in datasets:
             gdf = self._load_cache(dataset)
             if gdf.empty:
+                del gdf
                 continue
             source = selected_sources.get(dataset.dataset_id)
             out = gdf.copy()
@@ -116,11 +119,17 @@ class ExportService:
             out = out[keep_columns]
             if out.geometry.name != "geometry":
                 out = out.rename_geometry("geometry")
-            rows.append(out)
-        if rows:
-            merged = gpd.GeoDataFrame(pd.concat(rows, ignore_index=True), geometry="geometry", crs="EPSG:4326")
+            table = _geopandas_to_arrow(out, index=False)
+            if writer is None:
+                writer = pq.ParquetWriter(target, table.schema)
+            writer.write_table(table)
+            del out
+            del gdf
+            gc.collect()
+        if writer is not None:
+            writer.close()
         else:
-            merged = gpd.GeoDataFrame(
+            gpd.GeoDataFrame(
                 columns=[
                     "dataset_id",
                     "dataset_name",
@@ -133,8 +142,7 @@ class ExportService:
                 ],
                 geometry="geometry",
                 crs="EPSG:4326",
-            )
-        merged.to_parquet(target, index=False)
+            ).to_parquet(target, index=False)
         return target
 
     def _write_metadata_tables(

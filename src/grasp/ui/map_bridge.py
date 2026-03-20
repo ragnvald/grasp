@@ -1,7 +1,10 @@
 ﻿from __future__ import annotations
 
 import json
+import logging
+from collections import OrderedDict
 from pathlib import Path
+from time import perf_counter
 
 import geopandas as gpd
 
@@ -12,6 +15,8 @@ from grasp.qt_compat import QObject, Signal, Slot
 from grasp.styling import StyleService, merge_bounds
 from grasp.workspace import ProjectWorkspace
 
+logger = logging.getLogger(__name__)
+
 
 MAP_PREVIEW_FEATURE_LIMITS = {
     "point": 2500,
@@ -19,6 +24,8 @@ MAP_PREVIEW_FEATURE_LIMITS = {
     "polygon": 900,
     "other": 1200,
 }
+MAP_GEOJSON_CACHE_MAX_ITEMS = 8
+MAP_GEOJSON_CACHE_MAX_BYTES = 24 * 1024 * 1024
 
 
 class MapBridge(QObject):
@@ -30,7 +37,8 @@ class MapBridge(QObject):
         self.repository = repository
         self.ingest_service = IngestService(workspace)
         self.style_service = StyleService()
-        self._geojson_cache: dict[str, tuple[str, str]] = {}
+        self._geojson_cache: OrderedDict[str, tuple[str, str]] = OrderedDict()
+        self._geojson_cache_size_bytes = 0
         self._scope = "visible"
 
     def set_scope(self, scope: str) -> None:
@@ -41,6 +49,7 @@ class MapBridge(QObject):
 
     @Slot(result=str)
     def getState(self) -> str:
+        started = perf_counter()
         groups = dict(self.repository.list_groups())
         datasets = []
         all_bounds = []
@@ -73,10 +82,17 @@ class MapBridge(QObject):
             "datasets": datasets,
             "bounds": merge_bounds(all_bounds),
         }
-        return json.dumps(payload, ensure_ascii=False)
+        serialized = json.dumps(payload, ensure_ascii=False)
+        self._log_timing(
+            "getState",
+            started,
+            extra=f"datasets={len(datasets)} bytes={len(serialized)} scope={self._scope}",
+        )
+        return serialized
 
     @Slot(str, result=str)
     def getLayerGeoJson(self, dataset_id: str) -> str:
+        started = perf_counter()
         dataset = self.repository.get_dataset(dataset_id)
         if not dataset:
             return json.dumps({"type": "FeatureCollection", "features": []})
@@ -86,6 +102,8 @@ class MapBridge(QObject):
         cache_token = self._cache_token(dataset, path)
         cached = self._geojson_cache.get(dataset_id)
         if cached and cached[0] == cache_token:
+            self._geojson_cache.move_to_end(dataset_id)
+            self._log_timing("getLayerGeoJson(cache)", started, extra=f"dataset_id={dataset_id}")
             return cached[1]
         gdf = gpd.read_parquet(path)
         if gdf.crs is None:
@@ -97,11 +115,19 @@ class MapBridge(QObject):
             geojson = gdf.to_json(drop_id=True)
         except TypeError:
             geojson = gdf.to_json()
-        self._geojson_cache[dataset_id] = (cache_token, geojson)
+        self._store_geojson_cache_entry(dataset_id, cache_token, geojson)
+        self._log_timing(
+            "getLayerGeoJson",
+            started,
+            extra=f"dataset_id={dataset_id} features={len(gdf)} bytes={len(geojson)}",
+        )
         return geojson
 
     def publish_state(self) -> None:
-        self.stateChanged.emit(self.getState())
+        started = perf_counter()
+        state = self.getState()
+        self.stateChanged.emit(state)
+        self._log_timing("publish_state", started, extra=f"bytes={len(state)}")
 
     def _datasets_for_scope(self) -> list[DatasetRecord]:
         datasets = self.repository.list_datasets()
@@ -125,6 +151,31 @@ class MapBridge(QObject):
         if stored is not None:
             return stored
         return self.style_service.style_for_dataset(dataset, group_name=group_name)
+
+    def _store_geojson_cache_entry(self, dataset_id: str, cache_token: str, geojson: str) -> None:
+        previous = self._geojson_cache.pop(dataset_id, None)
+        if previous is not None:
+            self._geojson_cache_size_bytes -= len(previous[1].encode("utf-8"))
+        encoded_size = len(geojson.encode("utf-8"))
+        self._geojson_cache[dataset_id] = (cache_token, geojson)
+        self._geojson_cache_size_bytes += encoded_size
+        while (
+            len(self._geojson_cache) > MAP_GEOJSON_CACHE_MAX_ITEMS
+            or self._geojson_cache_size_bytes > MAP_GEOJSON_CACHE_MAX_BYTES
+        ):
+            evicted_dataset_id, evicted = self._geojson_cache.popitem(last=False)
+            self._geojson_cache_size_bytes -= len(evicted[1].encode("utf-8"))
+            logger.debug("Evicted cached GeoJSON for %s", evicted_dataset_id)
+
+    def _log_timing(self, operation: str, started: float, *, extra: str = "") -> None:
+        elapsed_ms = (perf_counter() - started) * 1000.0
+        message = f"MapBridge {operation} took {elapsed_ms:.1f} ms"
+        if extra:
+            message = f"{message} ({extra})"
+        if elapsed_ms >= 50.0:
+            logger.info(message)
+            return
+        logger.debug(message)
 
 
 def _geometry_category(geometry_type: str) -> str:

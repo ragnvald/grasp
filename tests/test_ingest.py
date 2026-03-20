@@ -97,6 +97,11 @@ class IngestServiceTests(unittest.TestCase):
             self.assertEqual(len(datasets), 1)
             self.assertEqual(datasets[0].source_format, "geojson")
 
+    def test_large_json_sniff_does_not_need_full_parse(self) -> None:
+        service = IngestService()
+        payload = '{"type":"FeatureCollection","features":[' + (' ' * 70000)
+        self.assertTrue(service._looks_like_geojson_text(payload))
+
     def test_scan_reuses_unchanged_existing_records(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

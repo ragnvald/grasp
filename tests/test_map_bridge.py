@@ -13,6 +13,7 @@ from shapely.geometry import Point, Polygon
 from grasp.catalog.repository import CatalogRepository
 from grasp.models import DatasetRecord
 from grasp.ui.map_bridge import (
+    MAP_GEOJSON_CACHE_MAX_ITEMS,
     MAP_PREVIEW_FEATURE_LIMITS,
     MapBridge,
     _geometry_category,
@@ -124,6 +125,64 @@ class MapBridgeTests(unittest.TestCase):
                 ["visible-ds", "hidden-ds"],
             )
             self.assertEqual(all_state["bounds"], [10.0, 60.0, 13.0, 63.0])
+
+    def test_geojson_cache_evicts_old_entries(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = ensure_workspace(tmp)
+            repository = CatalogRepository(workspace.db_path)
+            datasets = []
+            for index in range(MAP_GEOJSON_CACHE_MAX_ITEMS + 2):
+                cache_path = workspace.dataset_cache_path(f"ds{index}")
+                cache_path.write_text("placeholder", encoding="utf-8")
+                datasets.append(
+                    DatasetRecord(
+                        dataset_id=f"ds{index}",
+                        source_path=str(Path(tmp) / f"layer-{index}.geojson"),
+                        source_format="geojson",
+                        geometry_type="Point",
+                        feature_count=1,
+                        fingerprint=str(index),
+                        cache_path=cache_path.relative_to(workspace.root_path).as_posix(),
+                    )
+                )
+            repository.replace_datasets(datasets)
+            bridge = MapBridge(workspace, repository)
+
+            with patch("grasp.ui.map_bridge.gpd.read_parquet", return_value=_FakeGeoDataFrame()):
+                for index in range(MAP_GEOJSON_CACHE_MAX_ITEMS + 2):
+                    bridge.getLayerGeoJson(f"ds{index}")
+
+            self.assertLessEqual(len(bridge._geojson_cache), MAP_GEOJSON_CACHE_MAX_ITEMS)
+            self.assertNotIn("ds0", bridge._geojson_cache)
+
+    def test_publish_state_emits_prebuilt_state_payload(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = ensure_workspace(tmp)
+            repository = CatalogRepository(workspace.db_path)
+            repository.replace_datasets(
+                [
+                    DatasetRecord(
+                        dataset_id="visible-ds",
+                        source_path=str(Path(tmp) / "visible.geojson"),
+                        source_format="geojson",
+                        geometry_type="Polygon",
+                        feature_count=3,
+                        visibility=True,
+                        bbox_wgs84=[10.0, 60.0, 11.0, 61.0],
+                        cache_path="visible.parquet",
+                    )
+                ]
+            )
+            bridge = MapBridge(workspace, repository)
+            emitted: list[str] = []
+            bridge.stateChanged.connect(emitted.append)
+
+            bridge.publish_state()
+
+            self.assertEqual(len(emitted), 1)
+            payload = json.loads(emitted[0])
+            self.assertEqual([item["dataset_id"] for item in payload["datasets"]], ["visible-ds"])
+            self.assertEqual(payload["bounds"], [10.0, 60.0, 11.0, 61.0])
 
     def test_prepare_preview_gdf_limits_point_features(self) -> None:
         limit = MAP_PREVIEW_FEATURE_LIMITS["point"]

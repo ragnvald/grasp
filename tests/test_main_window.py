@@ -128,7 +128,7 @@ class MainWindowTests(unittest.TestCase):
                 self.assertEqual(window.datasets_group_box.title(), "Datasets")
                 self.assertEqual(window.browse_button.text(), "Browse")
                 self.assertEqual(window.scan_button.text(), "Rebuild archive")
-                self.assertEqual(window.load_existing_button.text(), "Load data fom archive")
+                self.assertEqual(window.load_existing_button.text(), "Load data from folder")
                 self.assertEqual(window.reset_data_button.text(), "Reset All Data")
                 self.assertEqual(window.review_actions_group_box.title(), "Info & Sources")
                 self.assertEqual(window.selection_group_box.title(), "Selection")
@@ -150,7 +150,9 @@ class MainWindowTests(unittest.TestCase):
                 self.assertEqual(window.save_dataset_button.text(), "Save Changes")
                 self.assertEqual(window.fill_ai_fields_button.text(), "Fill Empty Fields from AI")
                 self.assertEqual(window.make_visible_button.text(), "Make visible in maps")
+                self.assertEqual(window.hide_from_maps_button.text(), "Hide from maps")
                 self.assertEqual(window.include_in_report_button.text(), "Include in export")
+                self.assertEqual(window.exclude_from_report_button.text(), "Exclude from export")
                 self.assertEqual(window.transfer_ai_selected_button.maximumWidth(), 220)
                 self.assertEqual(window.save_dataset_button.maximumWidth(), 150)
                 self.assertIn("find info (fast) runs a local first-pass", window.review_actions_note.text().lower())
@@ -159,7 +161,9 @@ class MainWindowTests(unittest.TestCase):
                 self.assertTrue(window.datasets_group_box.isAncestorOf(window.apply_group_button))
                 self.assertTrue(window.datasets_group_box.isAncestorOf(window.fill_ai_fields_button))
                 self.assertTrue(window.datasets_group_box.isAncestorOf(window.make_visible_button))
+                self.assertTrue(window.datasets_group_box.isAncestorOf(window.hide_from_maps_button))
                 self.assertTrue(window.datasets_group_box.isAncestorOf(window.include_in_report_button))
+                self.assertTrue(window.datasets_group_box.isAncestorOf(window.exclude_from_report_button))
                 self.assertTrue(window.datasets_group_box.isAncestorOf(window.regroup_button))
                 self.assertTrue(window.datasets_group_box.isAncestorOf(window.show_all_button))
                 self.assertTrue(window.datasets_group_box.isAncestorOf(window.hide_all_button))
@@ -487,7 +491,7 @@ class MainWindowTests(unittest.TestCase):
             try:
                 with tempfile.TemporaryDirectory() as tmp:
                     window._set_workspace(tmp)
-                    window.append_activity_log("Loaded catalog.", activity="Load data fom archive")
+                    window.append_activity_log("Loaded catalog.", activity="Load data from folder")
 
                     log_path = Path(tmp) / "data_out" / "log.txt"
 
@@ -495,7 +499,7 @@ class MainWindowTests(unittest.TestCase):
                     contents = log_path.read_text(encoding="utf-8")
                     self.assertRegex(
                         contents,
-                        r"^\[\d{4}\.\d{2}\.\d{2} \d{2}:\d{2}:\d{2}\] \[Load data fom archive\] - Loaded catalog\.\n?$",
+                        r"^\[\d{4}\.\d{2}\.\d{2} \d{2}:\d{2}:\d{2}\] \[Load data from folder\] - Loaded catalog\.\n?$",
                     )
             finally:
                 window.close()
@@ -1183,6 +1187,44 @@ class MainWindowTests(unittest.TestCase):
             finally:
                 window.close()
 
+    def test_hide_from_maps_disables_visibility_for_checked_datasets(self) -> None:
+        with patch("grasp.ui.main_window.WEBENGINE_AVAILABLE", False):
+            window = MainWindow()
+            try:
+                with tempfile.TemporaryDirectory() as tmp:
+                    window._set_workspace(tmp)
+                    window.repository.replace_datasets(
+                        [
+                            DatasetRecord(
+                                dataset_id="a",
+                                source_path="D:/data/a.geojson",
+                                source_format="geojson",
+                                visibility=True,
+                                include_in_export=False,
+                                cache_path="a.parquet",
+                            ),
+                            DatasetRecord(
+                                dataset_id="b",
+                                source_path="D:/data/b.geojson",
+                                source_format="geojson",
+                                visibility=True,
+                                include_in_export=False,
+                                cache_path="b.parquet",
+                            ),
+                        ]
+                    )
+
+                    window.refresh_all_views()
+                    first_group = window.tree.topLevelItem(0)
+                    first_group.child(0).setCheckState(0, Qt.Checked)
+
+                    window.hide_checked_from_maps()
+
+                    self.assertFalse(window.repository.get_dataset("a").visibility)
+                    self.assertTrue(window.repository.get_dataset("b").visibility)
+            finally:
+                window.close()
+
     def test_visibility_checkbox_persists_immediately_for_selected_dataset(self) -> None:
         with patch("grasp.ui.main_window.WEBENGINE_AVAILABLE", False):
             window = MainWindow()
@@ -1249,6 +1291,42 @@ class MainWindowTests(unittest.TestCase):
 
                     self.assertFalse(window.repository.get_dataset("a").include_in_export)
                     self.assertTrue(window.repository.get_dataset("b").include_in_export)
+            finally:
+                window.close()
+
+    def test_exclude_from_report_unmarks_checked_datasets_for_export(self) -> None:
+        with patch("grasp.ui.main_window.WEBENGINE_AVAILABLE", False):
+            window = MainWindow()
+            try:
+                with tempfile.TemporaryDirectory() as tmp:
+                    window._set_workspace(tmp)
+                    window.repository.replace_datasets(
+                        [
+                            DatasetRecord(
+                                dataset_id="a",
+                                source_path="D:/data/a.geojson",
+                                source_format="geojson",
+                                include_in_export=True,
+                                cache_path="a.parquet",
+                            ),
+                            DatasetRecord(
+                                dataset_id="b",
+                                source_path="D:/data/b.geojson",
+                                source_format="geojson",
+                                include_in_export=True,
+                                cache_path="b.parquet",
+                            ),
+                        ]
+                    )
+
+                    window.refresh_all_views()
+                    first_group = window.tree.topLevelItem(0)
+                    first_group.child(1).setCheckState(0, Qt.Checked)
+
+                    window.exclude_checked_from_report()
+
+                    self.assertTrue(window.repository.get_dataset("a").include_in_export)
+                    self.assertFalse(window.repository.get_dataset("b").include_in_export)
             finally:
                 window.close()
 
@@ -1621,7 +1699,7 @@ class MainWindowTests(unittest.TestCase):
                     group_item = window.tree.topLevelItem(0)
                     group_item.child(0).setCheckState(0, Qt.Checked)
                     captured: list[tuple[str, list[str], str]] = []
-                    window._run_review_job_foreground_with_refresh = (
+                    window._start_worker_with_refresh = (
                         lambda fn, dataset_ids, success_message, **kwargs: captured.append(
                             (fn.__name__, dataset_ids, kwargs.get("activity_name", ""))
                         )

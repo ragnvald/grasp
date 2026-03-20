@@ -5,6 +5,7 @@ import gc
 import hashlib
 import json
 from pathlib import Path
+import re
 from typing import Callable
 
 import fiona
@@ -45,6 +46,7 @@ GEOJSON_TYPES = {
     "polygon",
     "multipolygon",
 }
+GEOJSON_SNIFF_BYTES = 65536
 
 
 @dataclass(slots=True)
@@ -525,21 +527,27 @@ class IngestService:
             return False
         try:
             with file_path.open("r", encoding="utf-8-sig") as handle:
-                payload = json.load(handle)
+                prefix = handle.read(GEOJSON_SNIFF_BYTES)
         except Exception:
             return False
-        if isinstance(payload, dict):
-            geo_type = str(payload.get("type") or "").lower()
-            if geo_type in GEOJSON_TYPES:
+        return self._looks_like_geojson_text(prefix)
+
+    def _looks_like_geojson_text(self, value: str) -> bool:
+        text = str(value or "").lstrip()
+        if not text:
+            return False
+        lowered = text.lower()
+        if lowered.startswith("{"):
+            if '"features"' in lowered and "[" in lowered:
                 return True
-            if isinstance(payload.get("features"), list):
+            if '"geometries"' in lowered and "[" in lowered:
                 return True
-            if isinstance(payload.get("geometries"), list):
+            type_match = re.search(r'"type"\s*:\s*"([^"]+)"', lowered)
+            if type_match and type_match.group(1) in GEOJSON_TYPES:
                 return True
             return False
-        if isinstance(payload, list) and payload:
-            first = payload[0]
-            return isinstance(first, dict) and str(first.get("type") or "").lower() == "feature"
+        if lowered.startswith("["):
+            return '"type"' in lowered and '"feature"' in lowered
         return False
 
     def _bbox_wgs84(self, gdf: gpd.GeoDataFrame) -> list[float]:

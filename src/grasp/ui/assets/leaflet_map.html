@@ -225,6 +225,26 @@
     Waiting for project state from the desktop app.
   </div>
   <script>
+    window.addEventListener("error", function(event){
+      if (typeof console !== "undefined" && console.error){
+        console.error(
+          "[MapError] " +
+          (event && event.message ? event.message : "Unknown error") +
+          " at " +
+          (event && event.filename ? event.filename : "<inline>") +
+          ":" +
+          (event && typeof event.lineno === "number" ? event.lineno : 0)
+        );
+      }
+    });
+
+    window.addEventListener("unhandledrejection", function(event){
+      if (typeof console !== "undefined" && console.error){
+        const reason = event && event.reason ? String(event.reason) : "Unknown promise rejection";
+        console.error("[MapError] Unhandled rejection: " + reason);
+      }
+    });
+
     let bridge = null;
     let map = null;
     let layerControl = null;
@@ -263,7 +283,10 @@
     let lastStateBounds = [];
     let lastKnownState = {datasets: [], bounds: []};
     let leafletAssetsPromise = null;
+    let mapInitPromise = null;
     let resizeReloadTimer = null;
+    let reloadInFlight = false;
+    let pendingReloadState = null;
     let mapMode = "browse";
     let browseDatasetId = "";
     const SVG_NS = "http://www.w3.org/2000/svg";
@@ -280,6 +303,18 @@
 
     function status(text){
       document.getElementById("statusBox").innerHTML = "<strong>GRASP</strong>" + text;
+    }
+
+    function logTiming(label, startedMs, details){
+      if (typeof console === "undefined" || !console.debug || typeof startedMs !== "number"){
+        return;
+      }
+      const elapsedMs = performance.now() - startedMs;
+      let message = "[MapPerf] " + label + " took " + elapsedMs.toFixed(1) + " ms";
+      if (details){
+        message += " (" + details + ")";
+      }
+      console.debug(message);
     }
 
     function loadStylesheet(url){
@@ -368,6 +403,19 @@
       }
     }
 
+    function safeInvalidateLeafletSize(){
+      if (rendererMode !== "leaflet" || !map || !mapHost || !document.body.contains(mapHost)){
+        return;
+      }
+      try {
+        map.invalidateSize(false);
+      } catch (error) {
+        if (typeof console !== "undefined" && console.warn){
+          console.warn("[MapWarn] Leaflet invalidateSize skipped: " + String(error));
+        }
+      }
+    }
+
     function teardownOfflineMap(){
       if (!mapHost){
         return;
@@ -402,56 +450,69 @@
         ensureMapControls();
         ensureLayerBrowser();
         window.setTimeout(function(){
-          if (map){
-            map.invalidateSize(false);
-          }
+          safeInvalidateLeafletSize();
         }, 0);
         return;
       }
-      if (typeof L === "undefined"){
-        try {
-          await ensureLeafletAssets();
-        } catch (_error) {
-          ensureMapControls();
-          ensureLayerBrowser();
-          initOfflineMap();
-          status("Leaflet or basemap assets unavailable. Using local offline renderer.");
-          return;
-        }
+      if (mapInitPromise){
+        return mapInitPromise;
       }
-      teardownOfflineMap();
-      ensureMapControls();
-      ensureLayerBrowser();
-      rendererMode = "leaflet";
-      map = L.map("map", {
-        preferCanvas: true,
-        zoomControl: true,
-        scrollWheelZoom: true,
-        doubleClickZoom: true,
-        boxZoom: true,
-        touchZoom: true,
-        keyboard: true,
-        dragging: true,
-        zoomSnap: 0.25,
-        zoomDelta: 0.5,
-        minZoom: 1,
-        maxZoom: 24
-      });
-      blankBase = L.layerGroup();
-      osmBase = L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
-        maxZoom: 19,
-        crossOrigin: true,
-        attribution: "&copy; OpenStreetMap contributors"
-      });
-      osmBase.on("tileerror", function(){
-        if (map && map.hasLayer(osmBase)){
-          map.removeLayer(osmBase);
-          blankBase.addTo(map);
-          status("OSM tiles unavailable. Showing local blank background.");
+      mapInitPromise = (async function(){
+        if (typeof L === "undefined"){
+          try {
+            await ensureLeafletAssets();
+          } catch (_error) {
+            ensureMapControls();
+            ensureLayerBrowser();
+            initOfflineMap();
+            status("Leaflet or basemap assets unavailable. Using local offline renderer.");
+            return;
+          }
         }
-      });
-      osmBase.addTo(map);
-      layerControl = L.control.layers({"OSM": osmBase, "Blank": blankBase}, {}, {collapsed: false}).addTo(map);
+        teardownOfflineMap();
+        ensureMapControls();
+        ensureLayerBrowser();
+        rendererMode = "leaflet";
+        if (mapHost && mapHost._leaflet_id){
+          try {
+            delete mapHost._leaflet_id;
+          } catch (_error) {}
+        }
+        map = L.map("map", {
+          preferCanvas: true,
+          zoomControl: true,
+          scrollWheelZoom: true,
+          doubleClickZoom: true,
+          boxZoom: true,
+          touchZoom: true,
+          keyboard: true,
+          dragging: true,
+          zoomSnap: 0.25,
+          zoomDelta: 0.5,
+          minZoom: 1,
+          maxZoom: 24
+        });
+        blankBase = L.layerGroup();
+        osmBase = L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
+          maxZoom: 19,
+          crossOrigin: true,
+          attribution: "&copy; OpenStreetMap contributors"
+        });
+        osmBase.on("tileerror", function(){
+          if (map && map.hasLayer(osmBase)){
+            map.removeLayer(osmBase);
+            blankBase.addTo(map);
+            status("OSM tiles unavailable. Showing local blank background.");
+          }
+        });
+        osmBase.addTo(map);
+        layerControl = L.control.layers({"OSM": osmBase, "Blank": blankBase}, {}, {collapsed: false}).addTo(map);
+      })();
+      try {
+        await mapInitPromise;
+      } finally {
+        mapInitPromise = null;
+      }
     }
 
     function initOfflineMap(){
@@ -523,42 +584,76 @@
       return {datasets, visibleLayers, visibleCount: availableDatasets.length};
     }
 
-    async function reloadState(){
-      if (!bridge){
+    async function reloadState(rawState){
+      pendingReloadState = typeof rawState === "string" ? rawState : null;
+      if (reloadInFlight || !bridge){
         return;
       }
-      await initMap();
-      if (!map && rendererMode !== "offline"){
-        return;
-      }
-      const raw = await bridge.getState();
-      const state = JSON.parse(raw || "{}");
-      lastStateBounds = Array.isArray(state.bounds) ? state.bounds.slice() : [];
-      if (rendererMode === "leaflet" && map){
-        map.invalidateSize(false);
-      }
-      pruneClientCaches(state);
-      const loaded = await loadVisibleLayers(state);
+      reloadInFlight = true;
+      try {
+        while (bridge){
+          const queuedRawState = pendingReloadState;
+          pendingReloadState = null;
+          const reloadStartedMs = performance.now();
+          await initMap();
+          if (!map && rendererMode !== "offline"){
+            return;
+          }
+          const stateFetchStartedMs = performance.now();
+          const raw = typeof queuedRawState === "string" ? queuedRawState : await bridge.getState();
+          logTiming(
+            typeof queuedRawState === "string" ? "state received from signal" : "bridge.getState()",
+            stateFetchStartedMs,
+            raw ? "bytes=" + raw.length : "bytes=0"
+          );
+          const parseStartedMs = performance.now();
+          const state = JSON.parse(raw || "{}");
+          logTiming(
+            "JSON.parse(state)",
+            parseStartedMs,
+            "datasets=" + ((state.datasets && state.datasets.length) || 0)
+          );
+          lastStateBounds = Array.isArray(state.bounds) ? state.bounds.slice() : [];
+          safeInvalidateLeafletSize();
+          pruneClientCaches(state);
+          const loaded = await loadVisibleLayers(state);
+          logTiming(
+            "reloadState visible layer preparation",
+            reloadStartedMs,
+            "layers=" + loaded.visibleLayers.length + " mode=" + rendererMode
+          );
 
-      if (rendererMode === "offline"){
-        renderOfflineState(state, loaded.visibleLayers);
-        status("Loaded " + loaded.visibleLayers.length + " dataset(s) with local offline renderer.");
-        return;
-      }
-      await syncLeafletLayers(loaded.visibleLayers);
-      if (!viewInitialized){
-        const initialBounds = preferredInitialBounds(state, loaded.datasets);
-        if (initialBounds){
-          fitLeafletBounds(initialBounds);
-        } else {
-          map.setView([63.43, 10.39], 4);
+          if (rendererMode === "offline"){
+            const renderStartedMs = performance.now();
+            renderOfflineState(state, loaded.visibleLayers);
+            logTiming("renderOfflineState", renderStartedMs, "layers=" + loaded.visibleLayers.length);
+            status("Loaded " + loaded.visibleLayers.length + " dataset(s) with local offline renderer.");
+          } else {
+            const renderStartedMs = performance.now();
+            await syncLeafletLayers(loaded.visibleLayers);
+            logTiming("syncLeafletLayers", renderStartedMs, "layers=" + loaded.visibleLayers.length);
+            if (!viewInitialized){
+              const initialBounds = preferredInitialBounds(state, loaded.datasets);
+              if (initialBounds){
+                fitLeafletBounds(initialBounds);
+              } else {
+                map.setView([63.43, 10.39], 4);
+              }
+              viewInitialized = true;
+            }
+            const summaryText = mapMode === "browse"
+              ? "Loaded layer " + browseLayerLabel(lastKnownState.datasets) + "."
+              : "Loaded " + loaded.visibleLayers.length + " available dataset(s).";
+            status(summaryText);
+            logTiming("reloadState total", reloadStartedMs, summaryText);
+          }
+          if (pendingReloadState === null){
+            break;
+          }
         }
-        viewInitialized = true;
+      } finally {
+        reloadInFlight = false;
       }
-      const summaryText = mapMode === "browse"
-        ? "Loaded layer " + browseLayerLabel(lastKnownState.datasets) + "."
-        : "Loaded " + loaded.visibleLayers.length + " available dataset(s).";
-      status(summaryText);
     }
 
     function pruneClientCaches(state){
@@ -582,8 +677,20 @@
       if (cached && cached.dataToken === dataset.cache_token){
         return cached.geojson;
       }
+      const fetchStartedMs = performance.now();
       const geojsonRaw = await bridge.getLayerGeoJson(dataset.dataset_id);
+      logTiming(
+        "bridge.getLayerGeoJson()",
+        fetchStartedMs,
+        (dataset.dataset_id || "dataset") + " bytes=" + (geojsonRaw ? geojsonRaw.length : 0)
+      );
+      const parseStartedMs = performance.now();
       const geojson = JSON.parse(geojsonRaw || '{"type":"FeatureCollection","features":[]}');
+      logTiming(
+        "JSON.parse(geojson)",
+        parseStartedMs,
+        (dataset.dataset_id || "dataset") + " features=" + ((geojson.features && geojson.features.length) || 0)
+      );
       datasetGeoJsonCache[dataset.dataset_id] = {
         dataToken: dataset.cache_token,
         geojson: geojson
@@ -1601,7 +1708,7 @@
 
     function handleViewportResize(){
       if (rendererMode === "leaflet" && map){
-        map.invalidateSize(false);
+        safeInvalidateLeafletSize();
         return;
       }
       if (rendererMode === "offline"){
@@ -1621,8 +1728,8 @@
     new QWebChannel(qt.webChannelTransport, function(channel){
       bridge = channel.objects.mapBridge;
       if (bridge && bridge.stateChanged){
-        bridge.stateChanged.connect(function(){
-          reloadState();
+        bridge.stateChanged.connect(function(rawState){
+          reloadState(rawState);
         });
       }
       reloadState();

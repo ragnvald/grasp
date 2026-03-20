@@ -60,6 +60,7 @@ from grasp.qt_compat import (
     QWidget,
     Qt,
     QWebChannel,
+    QWebEnginePage,
     QWebEngineSettings,
     QWebEngineView,
     Signal,
@@ -82,7 +83,7 @@ REMOTE_AI_REQUEST_COOLDOWN_S = 0.35
 UNDERSTANDING_PERSIST_BATCH_SIZE = 24
 MAP_HTTP_USER_AGENT = "GRASP-Desktop (+https://github.com/ragnvald/grasp)"
 # These labels reflect the current archive-oriented wording requested for the import flow.
-LOAD_ARCHIVE_LABEL = "Load data fom archive"
+LOAD_ARCHIVE_LABEL = "Load data from folder"
 REBUILD_ARCHIVE_LABEL = "Rebuild archive"
 
 
@@ -103,6 +104,27 @@ class SortableTableWidgetItem(QTableWidgetItem):
         if isinstance(other, SortableTableWidgetItem):
             return self._sort_value < other._sort_value
         return super().__lt__(other)
+
+
+if QWebEnginePage is not None:
+    class LoggingWebEnginePage(QWebEnginePage):
+        def __init__(self, log_callback, parent=None) -> None:
+            super().__init__(parent)
+            self._log_callback = log_callback
+
+        def javaScriptConsoleMessage(self, level, message: str, line_number: int, source_id: str) -> None:  # type: ignore[override]
+            level_name = getattr(level, "name", str(level))
+            text = f"JS console [{level_name}] {source_id}:{line_number} - {message}"
+            try:
+                self._log_callback(text)
+            except Exception:
+                pass
+            try:
+                super().javaScriptConsoleMessage(level, message, line_number, source_id)
+            except Exception:
+                pass
+else:
+    LoggingWebEnginePage = None
 
 
 class MainWindow(QMainWindow):
@@ -417,9 +439,17 @@ class MainWindow(QMainWindow):
         self.make_visible_button.clicked.connect(self.make_checked_visible_in_maps)
         dataset_actions_layout.addWidget(self.make_visible_button)
 
+        self.hide_from_maps_button = QPushButton("Hide from maps")
+        self.hide_from_maps_button.clicked.connect(self.hide_checked_from_maps)
+        dataset_actions_layout.addWidget(self.hide_from_maps_button)
+
         self.include_in_report_button = QPushButton("Include in export")
         self.include_in_report_button.clicked.connect(self.include_checked_in_report)
         dataset_actions_layout.addWidget(self.include_in_report_button)
+
+        self.exclude_from_report_button = QPushButton("Exclude from export")
+        self.exclude_from_report_button.clicked.connect(self.exclude_checked_from_report)
+        dataset_actions_layout.addWidget(self.exclude_from_report_button)
         dataset_actions_layout.addStretch(1)
         datasets_group_layout.addWidget(self.dataset_actions_group_box)
 
@@ -543,8 +573,17 @@ class MainWindow(QMainWindow):
 
         if WEBENGINE_AVAILABLE:
             self.map_view = QWebEngineView()
+            if LoggingWebEnginePage is not None and hasattr(self.map_view, "setPage"):
+                self.map_view.setPage(
+                    LoggingWebEnginePage(
+                        lambda message: self.append_activity_log(message, activity="Map"),
+                        self.map_view,
+                    )
+                )
             if hasattr(self.map_view, "loadFinished"):
                 self.map_view.loadFinished.connect(self._on_map_view_loaded)
+            if hasattr(self.map_view, "renderProcessTerminated"):
+                self.map_view.renderProcessTerminated.connect(self._on_map_render_process_terminated)
         else:
             self.map_view = QPlainTextEdit()
             self.map_view.setReadOnly(True)
@@ -925,7 +964,7 @@ class MainWindow(QMainWindow):
             "Fast local classification runs without external AI and is intended as a quick first pass.",
             activity="Fast Local Classification",
         )
-        self._run_review_job_foreground_with_refresh(
+        self._start_worker_with_refresh(
             self._heuristic_classify_dataset_ids,
             dataset_ids,
             "Fast local classification completed.",
@@ -1149,34 +1188,60 @@ class MainWindow(QMainWindow):
         self.refresh_all_views()
 
     def make_checked_visible_in_maps(self) -> None:
+        self._set_checked_visibility(True)
+
+    def hide_checked_from_maps(self) -> None:
+        self._set_checked_visibility(False)
+
+    def _set_checked_visibility(self, visible: bool) -> None:
         if self.repository is None:
             return
         dataset_ids = self._checked_dataset_ids()
         if not dataset_ids:
             QMessageBox.information(self, "Choose datasets", "Check one or more datasets first.")
             return
-        self.repository.set_visibility_for_datasets(dataset_ids, True)
-        self.map_scope_combo.setCurrentIndex(self.map_scope_combo.findData("visible"))
-        self.append_activity_log(
-            f"Enabled map visibility for {len(dataset_ids)} checked dataset(s).",
-            activity="Selection Actions",
-        )
-        self.statusBar().showMessage(f"Enabled map visibility for {len(dataset_ids)} dataset(s).", 5000)
+        self.repository.set_visibility_for_datasets(dataset_ids, visible)
+        if visible:
+            self.map_scope_combo.setCurrentIndex(self.map_scope_combo.findData("visible"))
+            self.append_activity_log(
+                f"Enabled map visibility for {len(dataset_ids)} checked dataset(s).",
+                activity="Selection Actions",
+            )
+            self.statusBar().showMessage(f"Enabled map visibility for {len(dataset_ids)} dataset(s).", 5000)
+        else:
+            self.append_activity_log(
+                f"Disabled map visibility for {len(dataset_ids)} checked dataset(s).",
+                activity="Selection Actions",
+            )
+            self.statusBar().showMessage(f"Disabled map visibility for {len(dataset_ids)} dataset(s).", 5000)
         self.refresh_all_views()
 
     def include_checked_in_report(self) -> None:
+        self._set_checked_export_inclusion(True)
+
+    def exclude_checked_from_report(self) -> None:
+        self._set_checked_export_inclusion(False)
+
+    def _set_checked_export_inclusion(self, include_in_export: bool) -> None:
         if self.repository is None:
             return
         dataset_ids = self._checked_dataset_ids()
         if not dataset_ids:
             QMessageBox.information(self, "Choose datasets", "Check one or more datasets first.")
             return
-        self.repository.set_include_in_export_for_datasets(dataset_ids, True)
-        self.append_activity_log(
-            f"Included {len(dataset_ids)} checked dataset(s) in export output.",
-            activity="Selection Actions",
-        )
-        self.statusBar().showMessage(f"Included {len(dataset_ids)} dataset(s) in export.", 5000)
+        self.repository.set_include_in_export_for_datasets(dataset_ids, include_in_export)
+        if include_in_export:
+            self.append_activity_log(
+                f"Included {len(dataset_ids)} checked dataset(s) in export output.",
+                activity="Selection Actions",
+            )
+            self.statusBar().showMessage(f"Included {len(dataset_ids)} dataset(s) in export.", 5000)
+        else:
+            self.append_activity_log(
+                f"Excluded {len(dataset_ids)} checked dataset(s) from export output.",
+                activity="Selection Actions",
+            )
+            self.statusBar().showMessage(f"Excluded {len(dataset_ids)} dataset(s) from export.", 5000)
         self.refresh_all_views()
 
     def transfer_ai_to_checked(self) -> None:
@@ -1550,6 +1615,7 @@ class MainWindow(QMainWindow):
         style_count = self.repository.summary()["style_count"] if self.repository is not None else 0
         map_scope = self._map_scope()
         map_dataset_ids = self._dataset_ids_for_scope(map_scope) if self.repository is not None else []
+        checked_count = len(self._checked_dataset_ids()) if self.repository is not None else 0
         self._map_refresh_pending = True
         if self.repository is None:
             self.map_summary.setText("No project loaded.")
@@ -1558,20 +1624,20 @@ class MainWindow(QMainWindow):
             self.map_bridge.set_scope(map_scope)
         if self._review_job_running:
             self.map_summary.setText(
-                f"Map layers available: {len(map_dataset_ids)} of {len(datasets)} | Styled: {style_count}. "
+                f"Map layers available: {len(map_dataset_ids)} of {len(datasets)} | Checked in Review: {checked_count} | Styled: {style_count}. "
                 "Map loading is paused while dataset processing is running."
             )
             return
         if not self._is_map_tab_active():
             self.map_summary.setText(
-                f"Map layers available: {len(map_dataset_ids)} of {len(datasets)} | Styled: {style_count}. "
+                f"Map layers available: {len(map_dataset_ids)} of {len(datasets)} | Checked in Review: {checked_count} | Styled: {style_count}. "
                 "Open the Map / Export tab to load the map in browse mode."
             )
             return
         self._ensure_map_ready()
         if WEBENGINE_AVAILABLE and not self._map_page_ready:
             self.map_summary.setText(
-                f"Map layers available: {len(map_dataset_ids)} of {len(datasets)} | Styled: {style_count}. "
+                f"Map layers available: {len(map_dataset_ids)} of {len(datasets)} | Checked in Review: {checked_count} | Styled: {style_count}. "
                 "Preparing the embedded map renderer..."
             )
             return
@@ -1579,7 +1645,7 @@ class MainWindow(QMainWindow):
             self.map_bridge.set_scope(map_scope)
         scope_note = "using datasets marked Visible on map." if map_scope == "visible" else "showing all datasets."
         self.map_summary.setText(
-            f"Map layers available: {len(map_dataset_ids)} of {len(datasets)} | Styled: {style_count}. "
+            f"Map layers available: {len(map_dataset_ids)} of {len(datasets)} | Checked in Review: {checked_count} | Styled: {style_count}. "
             f"Browse mode loads one layer at a time by default, {scope_note}"
         )
         if self.map_bridge is not None:
@@ -1794,6 +1860,17 @@ class MainWindow(QMainWindow):
         self.append_activity_log("Embedded map page loaded.", activity="Map")
         if self._map_refresh_pending and self._is_map_tab_active() and not self._review_job_running:
             self.refresh_map()
+
+    def _on_map_render_process_terminated(self, termination_status, exit_code: int) -> None:
+        status_name = getattr(termination_status, "name", str(termination_status))
+        self.append_activity_log(
+            f"Embedded map render process terminated ({status_name}, exit code {exit_code}).",
+            activity="Map",
+        )
+        self.map_summary.setText(
+            "The embedded map renderer stopped unexpectedly. Try Refresh Map. "
+            f"Renderer status: {status_name}, exit code {exit_code}."
+        )
 
     def _datasets(self):
         if self.repository is None:

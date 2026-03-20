@@ -19,6 +19,27 @@ class MapAssetTests(unittest.TestCase):
         self.assertIn("window.addEventListener(\"resize\", handleViewportResize);", html)
         self.assertIn("function currentMapCanvasSize()", html)
 
+    def test_leaflet_asset_supports_optional_state_payload_for_manual_profiling(self) -> None:
+        html = self._leaflet_map_html()
+        self.assertIn("async function reloadState(rawState)", html)
+        self.assertIn('const raw = typeof queuedRawState === "string" ? queuedRawState : await bridge.getState();', html)
+        self.assertIn("bridge.stateChanged.connect(function(rawState){", html)
+        self.assertIn("reloadState();", html)
+        self.assertIn("let reloadInFlight = false;", html)
+
+    def test_leaflet_asset_includes_bridge_and_parse_timing_logs(self) -> None:
+        html = self._leaflet_map_html()
+        self.assertIn("function logTiming(label, startedMs, details)", html)
+        self.assertIn('"bridge.getLayerGeoJson()"', html)
+        self.assertIn('"JSON.parse(geojson)"', html)
+        self.assertIn('"reloadState total"', html)
+
+    def test_leaflet_asset_reports_runtime_errors_to_console(self) -> None:
+        html = self._leaflet_map_html()
+        self.assertIn('window.addEventListener("error", function(event){', html)
+        self.assertIn('window.addEventListener("unhandledrejection", function(event){', html)
+        self.assertIn('"[MapError] Unhandled rejection: "', html)
+
     def test_leaflet_asset_uses_structured_popup_markup(self) -> None:
         html = self._leaflet_map_html()
         self.assertIn('lines.push(\'<div class="dataset-popup">\');', html)

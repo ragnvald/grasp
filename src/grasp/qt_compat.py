@@ -42,8 +42,9 @@ try:
 except Exception:
     QWebEngineView = None
 try:
-    from PySide6.QtWebEngineCore import QWebEngineSettings
+    from PySide6.QtWebEngineCore import QWebEnginePage, QWebEngineSettings
 except Exception:
+    QWebEnginePage = None
     QWebEngineSettings = None
 
 
