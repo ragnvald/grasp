@@ -24,7 +24,7 @@ if errorlevel 1 (
   )
 )
 
-"%PYTHON_EXE%" -m grasp
+"%PYTHON_EXE%" -m grasp %*
 set "EXIT_CODE=%ERRORLEVEL%"
 popd >nul
 exit /b %EXIT_CODE%

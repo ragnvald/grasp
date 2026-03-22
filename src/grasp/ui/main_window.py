@@ -1,5 +1,6 @@
 ﻿from __future__ import annotations
 
+from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 import shutil
@@ -26,6 +27,7 @@ from grasp.intelligence.providers import (
     OpenAIClassificationProvider,
 )
 from grasp.intelligence.service import IntelligenceService, SearchService
+from grasp.models import DatasetUnderstanding
 from grasp.qt_compat import (
     QAction,
     QApplication,
@@ -65,6 +67,7 @@ from grasp.qt_compat import (
     QWebEngineView,
     Signal,
     WEBENGINE_AVAILABLE,
+    WEBENGINE_UNAVAILABLE_MESSAGE,
 )
 from grasp.ui.map_bridge import MapBridge
 from grasp.ui.settings_dialog import MODEL_OPTIONS
@@ -356,7 +359,6 @@ class MainWindow(QMainWindow):
         )
         self.review_actions_note.setWordWrap(True)
         review_actions_box_layout.addWidget(self.review_actions_note)
-        layout.addWidget(self.review_actions_group_box)
 
         self.review_job_status = QLabel("No dataset processing job running.")
         self.review_job_status.setWordWrap(True)
@@ -379,13 +381,27 @@ class MainWindow(QMainWindow):
         splitter = QSplitter()
         layout.addWidget(splitter, 1)
 
-        datasets_host = QWidget()
-        datasets_host_layout = QVBoxLayout(datasets_host)
-        datasets_host_layout.setContentsMargins(0, 0, 0, 0)
-
         self.datasets_group_box = QGroupBox("Datasets")
         datasets_group_layout = QVBoxLayout(self.datasets_group_box)
-        datasets_group_layout.addWidget(self.review_visibility_note)
+
+        self.tree = DatasetTreeWidget()
+        self.tree.setHeaderLabels(["Datasets"])
+        self.tree.setDragDropMode(QTreeWidget.InternalMove)
+        self.tree.setSelectionMode(QTreeWidget.SingleSelection)
+        self.tree.itemSelectionChanged.connect(self.on_tree_selection_changed)
+        self.tree.itemChanged.connect(self.on_tree_item_changed)
+        self.tree.orderingChanged.connect(self.on_tree_order_changed)
+        datasets_group_layout.addWidget(self.tree, 1)
+
+        splitter.addWidget(self.datasets_group_box)
+
+        actions_host = QWidget()
+        actions_layout = QVBoxLayout(actions_host)
+        actions_layout.setContentsMargins(0, 0, 0, 0)
+        actions_layout.setSpacing(8)
+
+        actions_layout.addWidget(self.review_actions_group_box)
+        actions_layout.addWidget(self.review_visibility_note)
 
         self.selection_group_box = QGroupBox("Selection")
         selection_layout = QHBoxLayout(self.selection_group_box)
@@ -405,7 +421,7 @@ class MainWindow(QMainWindow):
         self.hide_group_button.clicked.connect(lambda: self.set_selected_group_checked(False))
         selection_layout.addWidget(self.hide_group_button)
         selection_layout.addStretch(1)
-        datasets_group_layout.addWidget(self.selection_group_box)
+        actions_layout.addWidget(self.selection_group_box)
 
         self.grouping_group_box = QGroupBox("Grouping")
         grouping_layout = QHBoxLayout(self.grouping_group_box)
@@ -427,10 +443,10 @@ class MainWindow(QMainWindow):
         self.grouping_scope_combo.addItem("All datasets", "all")
         grouping_layout.addWidget(self.grouping_scope_combo)
         grouping_layout.addStretch(1)
-        datasets_group_layout.addWidget(self.grouping_group_box)
+        actions_layout.addWidget(self.grouping_group_box)
 
         self.dataset_actions_group_box = QGroupBox("Selection actions")
-        dataset_actions_layout = QHBoxLayout(self.dataset_actions_group_box)
+        dataset_actions_layout = QVBoxLayout(self.dataset_actions_group_box)
         self.fill_ai_fields_button = QPushButton("Fill Empty Fields from AI")
         self.fill_ai_fields_button.clicked.connect(self.fill_checked_user_fields_from_ai)
         dataset_actions_layout.addWidget(self.fill_ai_fields_button)
@@ -450,26 +466,16 @@ class MainWindow(QMainWindow):
         self.exclude_from_report_button = QPushButton("Exclude from export")
         self.exclude_from_report_button.clicked.connect(self.exclude_checked_from_report)
         dataset_actions_layout.addWidget(self.exclude_from_report_button)
-        dataset_actions_layout.addStretch(1)
-        datasets_group_layout.addWidget(self.dataset_actions_group_box)
+        actions_layout.addWidget(self.dataset_actions_group_box)
+        actions_layout.addStretch(1)
 
-        self.tree = DatasetTreeWidget()
-        self.tree.setHeaderLabels(["Datasets"])
-        self.tree.setDragDropMode(QTreeWidget.InternalMove)
-        self.tree.setSelectionMode(QTreeWidget.SingleSelection)
-        self.tree.itemSelectionChanged.connect(self.on_tree_selection_changed)
-        self.tree.itemChanged.connect(self.on_tree_item_changed)
-        self.tree.orderingChanged.connect(self.on_tree_order_changed)
-        datasets_group_layout.addWidget(self.tree, 1)
-
-        datasets_host_layout.addWidget(self.datasets_group_box, 1)
-        splitter.addWidget(datasets_host)
+        splitter.addWidget(actions_host)
 
         inspector_host = QWidget()
         inspector_layout = QVBoxLayout(inspector_host)
 
-        dataset_group = QGroupBox("Dataset")
-        dataset_form = QFormLayout(dataset_group)
+        self.dataset_details_group_box = QGroupBox("Selected dataset")
+        dataset_form = QFormLayout(self.dataset_details_group_box)
         self.dataset_name_edit = QLineEdit()
         dataset_form.addRow("Name", self.dataset_name_edit)
 
@@ -526,11 +532,12 @@ class MainWindow(QMainWindow):
         dataset_button_layout.addStretch(1)
         dataset_form.addRow("", dataset_button_host)
 
-        inspector_layout.addWidget(dataset_group)
+        inspector_layout.addWidget(self.dataset_details_group_box)
         inspector_layout.addStretch(1)
         splitter.addWidget(inspector_host)
-        splitter.setStretchFactor(0, 3)
-        splitter.setStretchFactor(1, 4)
+        splitter.setStretchFactor(0, 4)
+        splitter.setStretchFactor(1, 3)
+        splitter.setStretchFactor(2, 4)
 
     def _build_map_tab(self) -> None:
         layout = QVBoxLayout(self.map_tab)
@@ -571,24 +578,13 @@ class MainWindow(QMainWindow):
         self.map_style_note.setWordWrap(True)
         layout.addWidget(self.map_style_note)
 
-        if WEBENGINE_AVAILABLE:
-            self.map_view = QWebEngineView()
-            if LoggingWebEnginePage is not None and hasattr(self.map_view, "setPage"):
-                self.map_view.setPage(
-                    LoggingWebEnginePage(
-                        lambda message: self.append_activity_log(message, activity="Map"),
-                        self.map_view,
-                    )
-                )
-            if hasattr(self.map_view, "loadFinished"):
-                self.map_view.loadFinished.connect(self._on_map_view_loaded)
-            if hasattr(self.map_view, "renderProcessTerminated"):
-                self.map_view.renderProcessTerminated.connect(self._on_map_render_process_terminated)
-        else:
-            self.map_view = QPlainTextEdit()
-            self.map_view.setReadOnly(True)
-            self.map_view.setPlainText("Qt WebEngine is not available in this environment.")
-        layout.addWidget(self.map_view, 1)
+        self.map_view_host = QWidget()
+        self.map_view_layout = QVBoxLayout(self.map_view_host)
+        self.map_view_layout.setContentsMargins(0, 0, 0, 0)
+        self.map_view_layout.setSpacing(0)
+        self.map_view = self._build_map_placeholder()
+        self.map_view_layout.addWidget(self.map_view, 1)
+        layout.addWidget(self.map_view_host, 1)
 
     def _build_settings_tab(self) -> None:
         layout = QVBoxLayout(self.settings_tab)
@@ -1504,9 +1500,22 @@ class MainWindow(QMainWindow):
                 continue
             if status_callback:
                 status_callback(f"Styling {index}/{total}: {dataset.preferred_name}")
-            style = self.style_service.style_for_dataset(
+            understanding = DatasetUnderstanding()
+            if self.intelligence_service is not None:
+                try:
+                    understanding = self.intelligence_service.classify(dataset)
+                except Exception:
+                    understanding = DatasetUnderstanding()
+            style_dataset = replace(
                 dataset,
-                group_name=groups.get(dataset.group_id, dataset.group_id),
+                display_name_ai=understanding.suggested_title or dataset.display_name_ai,
+                description_ai=understanding.suggested_description or dataset.description_ai,
+                suggested_group=understanding.suggested_group or dataset.suggested_group,
+                ai_confidence=float(understanding.confidence or dataset.ai_confidence or 0.0),
+            )
+            style = self.style_service.style_for_dataset(
+                style_dataset,
+                group_name=groups.get(style_dataset.group_id, style_dataset.group_id),
             )
             self.repository.upsert_style(dataset_id, style)
             processed += 1
@@ -1796,8 +1805,64 @@ class MainWindow(QMainWindow):
         self.current_settings.last_folder = normalized
         self.settings_store.save(self.current_settings)
 
+    def _build_map_placeholder(self, message: str | None = None) -> QPlainTextEdit:
+        placeholder = QPlainTextEdit()
+        placeholder.setReadOnly(True)
+        if message is None:
+            if WEBENGINE_AVAILABLE:
+                message = "Open the Map / Export tab to initialize the embedded map preview."
+            else:
+                message = WEBENGINE_UNAVAILABLE_MESSAGE
+        placeholder.setPlainText(message)
+        return placeholder
+
+    def _replace_map_view(self, new_view: QWidget) -> None:
+        old_view = getattr(self, "map_view", None)
+        self.map_view = new_view
+        if hasattr(self, "map_view_layout"):
+            self.map_view_layout.addWidget(new_view, 1)
+            if old_view is not None:
+                self.map_view_layout.removeWidget(old_view)
+        if old_view is not None and hasattr(old_view, "deleteLater"):
+            old_view.deleteLater()
+
+    def _ensure_webengine_map_view(self) -> bool:
+        if not WEBENGINE_AVAILABLE:
+            return False
+        if hasattr(self.map_view, "page"):
+            return True
+        try:
+            map_view = QWebEngineView()
+            if LoggingWebEnginePage is not None and hasattr(map_view, "setPage"):
+                map_view.setPage(
+                    LoggingWebEnginePage(
+                        lambda message: self.append_activity_log(message, activity="Map"),
+                        map_view,
+                    )
+                )
+            if hasattr(map_view, "loadFinished"):
+                map_view.loadFinished.connect(self._on_map_view_loaded)
+            if hasattr(map_view, "renderProcessTerminated"):
+                map_view.renderProcessTerminated.connect(self._on_map_render_process_terminated)
+        except Exception as exc:
+            self.append_activity_log(
+                f"Qt WebEngine could not be initialized ({exc}). The embedded map preview is unavailable.",
+                activity="Map",
+            )
+            self.map_summary.setText("Qt WebEngine could not be initialized in this environment.")
+            self._replace_map_view(
+                self._build_map_placeholder(
+                    "Qt WebEngine could not be initialized. The embedded map preview is unavailable in this environment."
+                )
+            )
+            return False
+        self._replace_map_view(map_view)
+        return True
+
     def _setup_map_bridge(self) -> None:
         if not WEBENGINE_AVAILABLE or self.current_workspace is None or self.repository is None:
+            return
+        if not self._ensure_webengine_map_view():
             return
         self._map_page_ready = False
         self.map_bridge = MapBridge(self.current_workspace, self.repository)

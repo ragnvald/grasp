@@ -14,11 +14,13 @@ from grasp.catalog.repository import CatalogRepository
 from grasp.models import DatasetRecord
 from grasp.ui.map_bridge import (
     MAP_GEOJSON_CACHE_MAX_ITEMS,
+    MAP_LAYER_NAME_MAX_LENGTH,
     MAP_PREVIEW_FEATURE_LIMITS,
     MapBridge,
     _geometry_category,
     _prepare_preview_gdf,
     _preview_simplification_tolerance,
+    _truncate_map_layer_name,
 )
 from grasp.workspace import ensure_workspace
 
@@ -52,6 +54,14 @@ class MapBridgeTests(unittest.TestCase):
         self.assertEqual(_geometry_category("Polygon"), "polygon")
         self.assertEqual(_geometry_category("GeometryCollection"), "other")
 
+    def test_map_layer_name_is_truncated_to_safe_length(self) -> None:
+        long_name = "L" * (MAP_LAYER_NAME_MAX_LENGTH + 25)
+
+        truncated = _truncate_map_layer_name(long_name)
+
+        self.assertEqual(len(truncated), MAP_LAYER_NAME_MAX_LENGTH)
+        self.assertTrue(truncated.endswith("(..)"))
+
     def test_layer_geojson_is_cached_until_cache_token_changes(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             workspace = ensure_workspace(tmp)
@@ -62,6 +72,7 @@ class MapBridgeTests(unittest.TestCase):
                 dataset_id="ds1",
                 source_path=str(Path(tmp) / "roads.geojson"),
                 source_format="geojson",
+                display_name_user="Road layer " + ("x" * 120),
                 geometry_type="Point",
                 feature_count=1,
                 fingerprint="abc",
@@ -80,6 +91,7 @@ class MapBridgeTests(unittest.TestCase):
             self.assertEqual(fake_gdf.to_json_calls, 1)
 
             state = json.loads(bridge.getState())
+            self.assertLessEqual(len(state["datasets"][0]["name"]), MAP_LAYER_NAME_MAX_LENGTH)
             self.assertTrue(state["datasets"][0]["cache_token"].startswith("ds1|"))
             self.assertIn("style", state["datasets"][0])
             self.assertTrue(state["datasets"][0]["style"]["theme"])

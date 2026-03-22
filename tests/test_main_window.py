@@ -10,7 +10,7 @@ from grasp.branding import APP_AUTHOR, APP_TAGLINE, APP_WINDOW_TITLE
 from grasp.intelligence.providers import OpenAIClassificationProvider
 from grasp.intelligence.service import IntelligenceService
 from grasp.models import DatasetRecord, DatasetUnderstanding, SourceCandidate
-from grasp.qt_compat import QApplication, QAbstractItemView, Qt
+from grasp.qt_compat import QApplication, QAbstractItemView, QPlainTextEdit, Qt
 from grasp.ui.main_window import MAP_HTTP_USER_AGENT, MainWindow
 
 
@@ -18,6 +18,31 @@ class MainWindowTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls.app = QApplication.instance() or QApplication([])
+
+    def test_webengine_view_is_not_constructed_until_map_surface_is_needed(self) -> None:
+        with patch("grasp.ui.main_window.WEBENGINE_AVAILABLE", True), patch("grasp.ui.main_window.LoggingWebEnginePage", None):
+            created: list[str] = []
+
+            class _WebEngineView(QPlainTextEdit):
+                def __init__(self) -> None:
+                    super().__init__()
+                    created.append("created")
+
+                def page(self):
+                    return object()
+
+            with patch("grasp.ui.main_window.QWebEngineView", _WebEngineView):
+                window = MainWindow()
+                try:
+                    self.assertEqual(created, [])
+                    self.assertIn("initialize the embedded map preview", window.map_view.toPlainText())
+
+                    self.assertTrue(window._ensure_webengine_map_view())
+
+                    self.assertEqual(created, ["created"])
+                    self.assertIsInstance(window.map_view, _WebEngineView)
+                finally:
+                    window.close()
 
     def test_map_loading_is_deferred_until_map_tab_is_opened(self) -> None:
         with patch("grasp.ui.main_window.WEBENGINE_AVAILABLE", False):
@@ -134,6 +159,7 @@ class MainWindowTests(unittest.TestCase):
                 self.assertEqual(window.selection_group_box.title(), "Selection")
                 self.assertEqual(window.grouping_group_box.title(), "Grouping")
                 self.assertEqual(window.dataset_actions_group_box.title(), "Selection actions")
+                self.assertEqual(window.dataset_details_group_box.title(), "Selected dataset")
                 self.assertEqual(window.ai_settings_group_box.title(), "AI Settings")
                 self.assertEqual(window.search_settings_group_box.title(), "Search Settings")
                 self.assertEqual(window.ai_context_group_box.title(), "AI Classification Context")
@@ -157,25 +183,28 @@ class MainWindowTests(unittest.TestCase):
                 self.assertEqual(window.save_dataset_button.maximumWidth(), 150)
                 self.assertIn("find info (fast) runs a local first-pass", window.review_actions_note.text().lower())
                 self.assertIn("find info (ai) updates ai title", window.review_actions_note.text().lower())
-                self.assertTrue(window.datasets_group_box.isAncestorOf(window.new_group_button))
-                self.assertTrue(window.datasets_group_box.isAncestorOf(window.apply_group_button))
-                self.assertTrue(window.datasets_group_box.isAncestorOf(window.fill_ai_fields_button))
-                self.assertTrue(window.datasets_group_box.isAncestorOf(window.make_visible_button))
-                self.assertTrue(window.datasets_group_box.isAncestorOf(window.hide_from_maps_button))
-                self.assertTrue(window.datasets_group_box.isAncestorOf(window.include_in_report_button))
-                self.assertTrue(window.datasets_group_box.isAncestorOf(window.exclude_from_report_button))
-                self.assertTrue(window.datasets_group_box.isAncestorOf(window.regroup_button))
-                self.assertTrue(window.datasets_group_box.isAncestorOf(window.show_all_button))
-                self.assertTrue(window.datasets_group_box.isAncestorOf(window.hide_all_button))
-                self.assertTrue(window.datasets_group_box.isAncestorOf(window.show_group_button))
-                self.assertTrue(window.datasets_group_box.isAncestorOf(window.hide_group_button))
                 self.assertTrue(window.datasets_group_box.isAncestorOf(window.tree))
                 self.assertTrue(window.review_actions_group_box.isAncestorOf(window.run_ai_sources_button))
                 self.assertTrue(window.review_actions_group_box.isAncestorOf(window.fast_info_button))
                 self.assertTrue(window.review_actions_group_box.isAncestorOf(window.find_sources_button))
                 self.assertTrue(window.review_actions_group_box.isAncestorOf(window.review_scope_combo))
                 self.assertTrue(window.review_actions_group_box.isAncestorOf(window.review_actions_note))
+                self.assertTrue(window.selection_group_box.isAncestorOf(window.show_all_button))
+                self.assertTrue(window.selection_group_box.isAncestorOf(window.hide_all_button))
+                self.assertTrue(window.selection_group_box.isAncestorOf(window.show_group_button))
+                self.assertTrue(window.selection_group_box.isAncestorOf(window.hide_group_button))
+                self.assertTrue(window.grouping_group_box.isAncestorOf(window.new_group_button))
+                self.assertTrue(window.grouping_group_box.isAncestorOf(window.apply_group_button))
+                self.assertTrue(window.grouping_group_box.isAncestorOf(window.regroup_button))
                 self.assertTrue(window.grouping_group_box.isAncestorOf(window.grouping_scope_combo))
+                self.assertTrue(window.dataset_actions_group_box.isAncestorOf(window.fill_ai_fields_button))
+                self.assertTrue(window.dataset_actions_group_box.isAncestorOf(window.make_visible_button))
+                self.assertTrue(window.dataset_actions_group_box.isAncestorOf(window.hide_from_maps_button))
+                self.assertTrue(window.dataset_actions_group_box.isAncestorOf(window.include_in_report_button))
+                self.assertTrue(window.dataset_actions_group_box.isAncestorOf(window.exclude_from_report_button))
+                self.assertTrue(window.dataset_details_group_box.isAncestorOf(window.dataset_name_edit))
+                self.assertTrue(window.dataset_details_group_box.isAncestorOf(window.ai_description_box))
+                self.assertTrue(window.dataset_details_group_box.isAncestorOf(window.save_dataset_button))
                 group_box_titles = [group_box.title() for group_box in window.findChildren(type(window.datasets_group_box))]
                 self.assertNotIn("Source Candidates", group_box_titles)
                 self.assertFalse(hasattr(window, "sources_table"))
@@ -1023,6 +1052,42 @@ class MainWindowTests(unittest.TestCase):
                     stored_style = window.repository.get_style("a")
                     self.assertIsNotNone(stored_style)
                     self.assertEqual(stored_style.theme, "protected-area")
+            finally:
+                window.close()
+
+    def test_style_generation_uses_intelligence_when_available(self) -> None:
+        with patch("grasp.ui.main_window.WEBENGINE_AVAILABLE", False):
+            window = MainWindow()
+            try:
+                with tempfile.TemporaryDirectory() as tmp:
+                    window._set_workspace(tmp)
+                    window.repository.replace_datasets(
+                        [
+                            DatasetRecord(
+                                dataset_id="a",
+                                source_path="D:/data/misc.gpkg",
+                                source_format="gpkg",
+                                layer_name="Camada",
+                                geometry_type="MultiLineString",
+                                cache_path="a.parquet",
+                            )
+                        ]
+                    )
+                    window.intelligence_service = SimpleNamespace(
+                        classify=lambda dataset: DatasetUnderstanding(
+                            suggested_title=dataset.layer_name,
+                            suggested_description="River network",
+                            suggested_group="hydrology",
+                            confidence=0.8,
+                        )
+                    )
+
+                    processed = window._style_dataset_ids(["a"])
+
+                    self.assertEqual(processed, 1)
+                    stored_style = window.repository.get_style("a")
+                    self.assertIsNotNone(stored_style)
+                    self.assertEqual(stored_style.theme, "hydrology")
             finally:
                 window.close()
 

@@ -26,6 +26,8 @@ MAP_PREVIEW_FEATURE_LIMITS = {
 }
 MAP_GEOJSON_CACHE_MAX_ITEMS = 8
 MAP_GEOJSON_CACHE_MAX_BYTES = 24 * 1024 * 1024
+MAP_LAYER_NAME_MAX_LENGTH = 100
+MAP_LAYER_NAME_TRUNCATION_SUFFIX = "(..)"
 
 
 class MapBridge(QObject):
@@ -64,7 +66,7 @@ class MapBridge(QObject):
             datasets.append(
                 {
                     "dataset_id": dataset.dataset_id,
-                    "name": dataset.preferred_name,
+                    "name": _truncate_map_layer_name(dataset.preferred_name),
                     "description": dataset.preferred_description,
                     "group_name": groups.get(dataset.group_id, dataset.group_id),
                     "geometry_type": dataset.geometry_type,
@@ -187,6 +189,15 @@ def _geometry_category(geometry_type: str) -> str:
     if "polygon" in value:
         return "polygon"
     return "other"
+
+
+def _truncate_map_layer_name(value: str, max_length: int = MAP_LAYER_NAME_MAX_LENGTH) -> str:
+    text = str(value or "").strip()
+    if len(text) <= max_length:
+        return text
+    if max_length <= len(MAP_LAYER_NAME_TRUNCATION_SUFFIX):
+        return MAP_LAYER_NAME_TRUNCATION_SUFFIX[:max_length]
+    return f"{text[: max_length - len(MAP_LAYER_NAME_TRUNCATION_SUFFIX)].rstrip()}{MAP_LAYER_NAME_TRUNCATION_SUFFIX}"
 
 
 def _prepare_preview_gdf(gdf: gpd.GeoDataFrame, geometry_category: str) -> gpd.GeoDataFrame:
