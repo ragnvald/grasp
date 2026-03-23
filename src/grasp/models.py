@@ -27,6 +27,8 @@ class DatasetRecord:
     sort_order: int = 0
     visibility: bool = True
     include_in_export: bool = False
+    source_style_summary: str = ""
+    source_style_items_json: str = "[]"
     cache_path: str = ""
     ai_confidence: float = 0.0
     suggested_group: str = ""
@@ -56,6 +58,20 @@ class DatasetRecord:
             return json.loads(self.column_profile_json or "{}")
         except json.JSONDecodeError:
             return {}
+
+    @property
+    def source_style_items(self) -> list[dict[str, Any]]:
+        try:
+            payload = json.loads(self.source_style_items_json or "[]")
+        except json.JSONDecodeError:
+            return []
+        if not isinstance(payload, list):
+            return []
+        return [item for item in payload if isinstance(item, dict)]
+
+    @property
+    def has_source_style(self) -> bool:
+        return bool(self.source_style_summary.strip() or self.source_style_items)
 
     def to_row(self) -> dict[str, Any]:
         row = asdict(self)

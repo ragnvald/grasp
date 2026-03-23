@@ -216,6 +216,17 @@
     .leaflet-container {
       background: transparent;
     }
+    .leaflet-control-layers {
+      max-width: min(320px, calc(100vw - 32px));
+      overflow-wrap: anywhere;
+    }
+    .leaflet-control-layers label {
+      max-width: 100%;
+      white-space: normal;
+    }
+    .leaflet-control-layers.grasp-layers-hidden {
+      display: none;
+    }
   </style>
 </head>
 <body>
@@ -255,6 +266,7 @@
     let rendererMode = "";
     let mapHost = null;
     let mapControls = null;
+    let layerListButton = null;
     let layerBrowser = null;
     let browseIndicatorTitle = null;
     let browseIndicatorDetail = null;
@@ -289,9 +301,11 @@
     let pendingReloadState = null;
     let mapMode = "browse";
     let browseDatasetId = "";
+    let layerListVisible = false;
     const SVG_NS = "http://www.w3.org/2000/svg";
     const DEFAULT_OFFLINE_CANVAS_WIDTH = 1200;
     const DEFAULT_OFFLINE_CANVAS_HEIGHT = 800;
+    const MAX_VISIBLE_LAYER_RENDER_COUNT = 24;
     const LEAFLET_CSS_URLS = [
       "https://unpkg.com/leaflet@1.9.4/dist/leaflet.css",
       "https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css"
@@ -507,6 +521,7 @@
         });
         osmBase.addTo(map);
         layerControl = L.control.layers({"OSM": osmBase, "Blank": blankBase}, {}, {collapsed: false}).addTo(map);
+        updateLayerControlVisibility();
       })();
       try {
         await mapInitPromise;
@@ -563,7 +578,10 @@
       syncBrowseSelection(datasets);
       updateLayerBrowser(datasets);
       const availableDatasets = datasets.slice();
-      const selectedDatasets = mapMode === "browse" ? currentBrowseDatasets(datasets) : availableDatasets;
+      const selectedDatasets = mapMode === "browse"
+        ? currentBrowseDatasets(datasets)
+        : availableDatasets.slice(0, MAX_VISIBLE_LAYER_RENDER_COUNT);
+      const visibleLayerLimitApplied = mapMode === "visible" && availableDatasets.length > selectedDatasets.length;
       const visibleLayers = [];
       for (let index = 0; index < selectedDatasets.length; index += 1){
         const dataset = selectedDatasets[index];
@@ -581,7 +599,12 @@
         });
         await yieldToUi();
       }
-      return {datasets, visibleLayers, visibleCount: availableDatasets.length};
+      return {
+        datasets,
+        visibleLayers,
+        visibleCount: availableDatasets.length,
+        visibleLayerLimitApplied: visibleLayerLimitApplied
+      };
     }
 
     async function reloadState(rawState){
@@ -643,7 +666,11 @@
             }
             const summaryText = mapMode === "browse"
               ? "Loaded layer " + browseLayerLabel(lastKnownState.datasets) + "."
-              : "Loaded " + loaded.visibleLayers.length + " available dataset(s).";
+              : (
+                  loaded.visibleLayerLimitApplied
+                    ? "Loaded first " + loaded.visibleLayers.length + " of " + loaded.visibleCount + " available dataset(s) (safety limit)."
+                    : "Loaded " + loaded.visibleLayers.length + " available dataset(s)."
+                );
             status(summaryText);
             logTiming("reloadState total", reloadStartedMs, summaryText);
           }
@@ -811,6 +838,7 @@
       }
       if (visibleModeButton){
         visibleModeButton.classList.toggle("active", mapMode === "visible");
+        visibleModeButton.title = "Load up to " + String(MAX_VISIBLE_LAYER_RENDER_COUNT) + " selected layers at once.";
       }
     }
 
@@ -954,6 +982,7 @@
         }
       }
       layerControl = L.control.layers({"OSM": osmBase, "Blank": blankBase}, overlays, {collapsed: false}).addTo(map);
+      updateLayerControlVisibility();
     }
 
     function datasetMetaToken(dataset){
@@ -1409,6 +1438,9 @@
       mapControls.appendChild(createMapControlButton("+", function(){ zoomInAction(); }));
       mapControls.appendChild(createMapControlButton("-", function(){ zoomOutAction(); }));
       mapControls.appendChild(createMapControlButton("Full Extent", function(){ zoomToFullExtent(); }));
+      layerListButton = createMapControlButton("Show Layers", function(){ toggleLayerControlVisibility(); });
+      mapControls.appendChild(layerListButton);
+      updateLayerControlVisibility();
       mapHost.appendChild(mapControls);
     }
 
@@ -1422,6 +1454,26 @@
         onClick();
       });
       return button;
+    }
+
+    function toggleLayerControlVisibility(){
+      layerListVisible = !layerListVisible;
+      updateLayerControlVisibility();
+    }
+
+    function updateLayerControlVisibility(){
+      const canShowLayerList = rendererMode === "leaflet" && !!layerControl;
+      if (layerListButton){
+        layerListButton.disabled = !canShowLayerList;
+        layerListButton.classList.toggle("active", canShowLayerList && layerListVisible);
+        layerListButton.textContent = layerListVisible ? "Hide Layers" : "Show Layers";
+      }
+      const container = layerControl && typeof layerControl.getContainer === "function"
+        ? layerControl.getContainer()
+        : null;
+      if (container && container.classList){
+        container.classList.toggle("grasp-layers-hidden", !layerListVisible);
+      }
     }
 
     function zoomInAction(){

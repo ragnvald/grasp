@@ -10,7 +10,7 @@ from grasp.branding import APP_AUTHOR, APP_TAGLINE, APP_WINDOW_TITLE
 from grasp.intelligence.providers import OpenAIClassificationProvider
 from grasp.intelligence.service import IntelligenceService
 from grasp.models import DatasetRecord, DatasetUnderstanding, SourceCandidate
-from grasp.qt_compat import QApplication, QAbstractItemView, QPlainTextEdit, Qt
+from grasp.qt_compat import QApplication, QAbstractItemView, QMessageBox, QPlainTextEdit, Qt
 from grasp.ui.main_window import MAP_HTTP_USER_AGENT, MainWindow
 
 
@@ -155,6 +155,8 @@ class MainWindowTests(unittest.TestCase):
                 self.assertEqual(window.scan_button.text(), "Rebuild archive")
                 self.assertEqual(window.load_existing_button.text(), "Load data from folder")
                 self.assertEqual(window.reset_data_button.text(), "Reset All Data")
+                self.assertEqual(window.simplify_import_names_checkbox.text(), "Simplify long dataset names on import")
+                self.assertIn("Description", window.simplify_import_names_checkbox.toolTip())
                 self.assertEqual(window.review_actions_group_box.title(), "Info & Sources")
                 self.assertEqual(window.selection_group_box.title(), "Selection")
                 self.assertEqual(window.grouping_group_box.title(), "Grouping")
@@ -183,6 +185,7 @@ class MainWindowTests(unittest.TestCase):
                 self.assertEqual(window.save_dataset_button.maximumWidth(), 150)
                 self.assertIn("find info (fast) runs a local first-pass", window.review_actions_note.text().lower())
                 self.assertIn("find info (ai) updates ai title", window.review_actions_note.text().lower())
+                self.assertIn("group suggestion", window.review_actions_note.text().lower())
                 self.assertTrue(window.datasets_group_box.isAncestorOf(window.tree))
                 self.assertTrue(window.review_actions_group_box.isAncestorOf(window.run_ai_sources_button))
                 self.assertTrue(window.review_actions_group_box.isAncestorOf(window.fast_info_button))
@@ -203,6 +206,7 @@ class MainWindowTests(unittest.TestCase):
                 self.assertTrue(window.dataset_actions_group_box.isAncestorOf(window.include_in_report_button))
                 self.assertTrue(window.dataset_actions_group_box.isAncestorOf(window.exclude_from_report_button))
                 self.assertTrue(window.dataset_details_group_box.isAncestorOf(window.dataset_name_edit))
+                self.assertTrue(window.dataset_details_group_box.isAncestorOf(window.source_style_label))
                 self.assertTrue(window.dataset_details_group_box.isAncestorOf(window.ai_description_box))
                 self.assertTrue(window.dataset_details_group_box.isAncestorOf(window.save_dataset_button))
                 group_box_titles = [group_box.title() for group_box in window.findChildren(type(window.datasets_group_box))]
@@ -244,6 +248,35 @@ class MainWindowTests(unittest.TestCase):
                 self.assertIn("checkmark_indeterminate.svg", window.styleSheet())
                 self.assertIn("QPushButton#CornerExitButton", window.styleSheet())
                 self.assertIn("max-height: 24px;", window.styleSheet())
+            finally:
+                window.close()
+
+    def test_populate_inspector_shows_source_style_summary(self) -> None:
+        with patch("grasp.ui.main_window.WEBENGINE_AVAILABLE", False):
+            window = MainWindow()
+            try:
+                with tempfile.TemporaryDirectory() as tmp:
+                    window._set_workspace(tmp)
+                    window.repository.replace_datasets(
+                        [
+                            DatasetRecord(
+                                dataset_id="styled",
+                                source_path="D:/data/roads.geojson",
+                                source_format="geojson",
+                                source_style_summary="Possible source styling detected: QGIS QML style file (roads.qml).",
+                                source_style_items_json='[{"kind":"sidecar:qml","label":"QGIS QML style file (roads.qml)","path":"D:/data/roads.qml"}]',
+                                cache_path="styled.parquet",
+                            )
+                        ]
+                    )
+
+                    window.refresh_all_views()
+                    group_item = window.tree.topLevelItem(0)
+                    child_item = group_item.child(0)
+                    window.tree.setCurrentItem(child_item)
+
+                    self.assertIn("roads.qml", window.source_style_label.text())
+                    self.assertIn("roads.qml", window.source_style_label.toolTip())
             finally:
                 window.close()
 
@@ -292,6 +325,32 @@ class MainWindowTests(unittest.TestCase):
                     self.assertEqual(window.import_table.item(1, 0).text(), "Zones")
                     self.assertEqual(window.import_table.item(2, 0).text(), "Places")
                     self.assertEqual(window.import_table.editTriggers(), QAbstractItemView.NoEditTriggers)
+            finally:
+                window.close()
+
+    def test_import_table_marks_possible_source_styling(self) -> None:
+        with patch("grasp.ui.main_window.WEBENGINE_AVAILABLE", False):
+            window = MainWindow()
+            try:
+                with tempfile.TemporaryDirectory() as tmp:
+                    window._set_workspace(tmp)
+                    window.repository.replace_datasets(
+                        [
+                            DatasetRecord(
+                                dataset_id="styled",
+                                source_path="D:/data/roads.geojson",
+                                source_format="geojson",
+                                source_style_summary="Possible source styling detected: QGIS QML style file (roads.qml).",
+                                source_style_items_json='[{"kind":"sidecar:qml","label":"QGIS QML style file (roads.qml)","path":"D:/data/roads.qml"}]',
+                                cache_path="styled.parquet",
+                            )
+                        ]
+                    )
+
+                    window.refresh_import_table()
+
+                    self.assertEqual(window.import_table.item(0, 4).text(), "Possible styling")
+                    self.assertIn("Possible source styling: 1", window.import_summary.text())
             finally:
                 window.close()
 
@@ -584,6 +643,95 @@ class MainWindowTests(unittest.TestCase):
             finally:
                 window.close()
 
+    def test_scan_result_can_simplify_long_import_names(self) -> None:
+        with patch("grasp.ui.main_window.WEBENGINE_AVAILABLE", False):
+            window = MainWindow()
+            try:
+                with tempfile.TemporaryDirectory() as tmp:
+                    window._set_workspace(tmp)
+                    window.simplify_import_names_checkbox.setChecked(True)
+                    dataset = DatasetRecord(
+                        dataset_id="long1",
+                        source_path="D:/data/pndt_vectors.gpkg",
+                        source_format="gpkg",
+                        layer_name="cartografia_tematica__toponimia__posto_fronteira__posto_fronteira",
+                        cache_path="long1.parquet",
+                        fingerprint="abc",
+                    )
+
+                    window.on_scan_result([dataset])
+
+                    stored = window.repository.get_dataset("long1")
+                    self.assertEqual(stored.display_name_user, "Posto fronteira")
+                    self.assertIn("Source naming context: Cartografia tematica > Toponimia.", stored.description_user)
+                    self.assertEqual(window.import_table.item(0, 0).text(), "Posto fronteira")
+            finally:
+                window.close()
+
+    def test_scan_result_keeps_source_name_when_simplification_is_disabled(self) -> None:
+        with patch("grasp.ui.main_window.WEBENGINE_AVAILABLE", False):
+            window = MainWindow()
+            try:
+                with tempfile.TemporaryDirectory() as tmp:
+                    window._set_workspace(tmp)
+                    dataset = DatasetRecord(
+                        dataset_id="long1",
+                        source_path="D:/data/pndt_vectors.gpkg",
+                        source_format="gpkg",
+                        layer_name="cartografia_tematica__toponimia__posto_fronteira__posto_fronteira",
+                        cache_path="long1.parquet",
+                        fingerprint="abc",
+                    )
+
+                    window.on_scan_result([dataset])
+
+                    stored = window.repository.get_dataset("long1")
+                    self.assertEqual(stored.display_name_user, "")
+                    self.assertEqual(
+                        window.import_table.item(0, 0).text(),
+                        "cartografia_tematica__toponimia__posto_fronteira__posto_fronteira",
+                    )
+            finally:
+                window.close()
+
+    def test_scan_result_does_not_override_existing_manual_name_when_simplifying(self) -> None:
+        with patch("grasp.ui.main_window.WEBENGINE_AVAILABLE", False):
+            window = MainWindow()
+            try:
+                with tempfile.TemporaryDirectory() as tmp:
+                    window._set_workspace(tmp)
+                    window.repository.replace_datasets(
+                        [
+                            DatasetRecord(
+                                dataset_id="long1",
+                                source_path="D:/data/pndt_vectors.gpkg",
+                                source_format="gpkg",
+                                layer_name="cartografia_tematica__toponimia__posto_fronteira__posto_fronteira",
+                                display_name_user="Border posts",
+                                description_user="Manual description",
+                                cache_path="long1.parquet",
+                                fingerprint="old",
+                            )
+                        ]
+                    )
+                    window.simplify_import_names_checkbox.setChecked(True)
+                    dataset = DatasetRecord(
+                        dataset_id="long1",
+                        source_path="D:/data/pndt_vectors.gpkg",
+                        source_format="gpkg",
+                        layer_name="cartografia_tematica__toponimia__posto_fronteira__posto_fronteira",
+                        cache_path="long1.parquet",
+                        fingerprint="new",
+                    )
+
+                    window.on_scan_result([dataset])
+
+                    stored = window.repository.get_dataset("long1")
+                    self.assertEqual(stored.display_name_user, "Border posts")
+                    self.assertEqual(stored.description_user, "Manual description")
+            finally:
+                window.close()
+
     def test_scan_result_processing_is_scheduled_outside_worker_result_slot(self) -> None:
         with patch("grasp.ui.main_window.WEBENGINE_AVAILABLE", False):
             window = MainWindow()
@@ -862,9 +1010,11 @@ class MainWindowTests(unittest.TestCase):
                 window.close()
 
     def test_ai_runtime_note_reports_missing_api_key_and_fallback(self) -> None:
-        with patch("grasp.ui.main_window.WEBENGINE_AVAILABLE", False):
+        with patch.dict("os.environ", {"OPENAI_API_KEY": ""}, clear=False), patch("grasp.ui.main_window.WEBENGINE_AVAILABLE", False):
             window = MainWindow()
             try:
+                window.current_settings.openai_api_key = ""
+                window._rebuild_ai_services()
                 note = window._ai_runtime_note(12)
                 self.assertIn("OpenAI API key is missing", note)
                 self.assertIn("heuristic fallback for 12 dataset(s)", note)
@@ -943,9 +1093,11 @@ class MainWindowTests(unittest.TestCase):
                 window.close()
 
     def test_manual_ai_understanding_logs_heuristic_fallback_when_api_key_is_missing(self) -> None:
-        with patch("grasp.ui.main_window.WEBENGINE_AVAILABLE", False):
+        with patch.dict("os.environ", {"OPENAI_API_KEY": ""}, clear=False), patch("grasp.ui.main_window.WEBENGINE_AVAILABLE", False):
             window = MainWindow()
             try:
+                window.current_settings.openai_api_key = ""
+                window._rebuild_ai_services()
                 with tempfile.TemporaryDirectory() as tmp:
                     window._set_workspace(tmp)
                     window.repository.replace_datasets(
@@ -992,10 +1144,12 @@ class MainWindowTests(unittest.TestCase):
                     )
                     messages: list[str] = []
                     batch_sizes: list[int] = []
+                    auto_assign_flags: list[bool] = []
                     original_bulk_upsert = window.repository.upsert_understandings_bulk
 
                     def _capture_bulk_upsert(updates, *, auto_assign_group=False):
                         batch_sizes.append(len(updates))
+                        auto_assign_flags.append(bool(auto_assign_group))
                         return original_bulk_upsert(updates, auto_assign_group=auto_assign_group)
 
                     window.intelligence_service = SimpleNamespace(
@@ -1013,12 +1167,51 @@ class MainWindowTests(unittest.TestCase):
 
                     self.assertEqual(processed, 3)
                     self.assertEqual(batch_sizes, [2, 1])
+                    self.assertEqual(auto_assign_flags, [False, False])
                     self.assertTrue(
                         any("Persisting 2 understanding update(s) to the catalog." in message for message in messages)
                     )
                     self.assertTrue(
                         any("Persisting 1 understanding update(s) to the catalog." in message for message in messages)
                     )
+            finally:
+                window.close()
+
+    def test_find_info_ai_keeps_existing_group_membership_unchanged(self) -> None:
+        with patch("grasp.ui.main_window.WEBENGINE_AVAILABLE", False):
+            window = MainWindow()
+            try:
+                with tempfile.TemporaryDirectory() as tmp:
+                    window._set_workspace(tmp)
+                    window.repository.replace_datasets(
+                        [
+                            DatasetRecord(
+                                dataset_id="a",
+                                source_path="D:/data/a.geojson",
+                                source_format="geojson",
+                                layer_name="Zoneamento Erosao Buffer 300",
+                                group_id="ungrouped",
+                                cache_path="a.parquet",
+                            )
+                        ]
+                    )
+                    window.intelligence_service = SimpleNamespace(
+                        classify=lambda dataset: DatasetUnderstanding(
+                            suggested_title="AI title",
+                            suggested_description="AI description",
+                            suggested_group="coastal",
+                            confidence=0.8,
+                        )
+                    )
+
+                    processed = window._classify_dataset_ids(["a"])
+
+                    stored = window.repository.get_dataset("a")
+                    self.assertEqual(processed, 1)
+                    self.assertEqual(stored.display_name_ai, "AI title")
+                    self.assertEqual(stored.suggested_group, "coastal")
+                    self.assertEqual(stored.group_id, "ungrouped")
+                    self.assertNotIn(("coastal", "Coastal"), window.repository.list_groups())
             finally:
                 window.close()
 
@@ -1118,6 +1311,64 @@ class MainWindowTests(unittest.TestCase):
                     self.assertTrue(
                         any("Styled 1/2 dataset(s). Skipped 1 missing dataset(s)." == message for message in messages)
                     )
+            finally:
+                window.close()
+
+    def test_start_style_for_scope_warns_when_source_styling_is_detected(self) -> None:
+        with patch("grasp.ui.main_window.WEBENGINE_AVAILABLE", False):
+            window = MainWindow()
+            try:
+                with tempfile.TemporaryDirectory() as tmp:
+                    window._set_workspace(tmp)
+                    window.repository.replace_datasets(
+                        [
+                            DatasetRecord(
+                                dataset_id="styled",
+                                source_path="D:/data/roads.geojson",
+                                source_format="geojson",
+                                source_style_summary="Possible source styling detected: QGIS QML style file (roads.qml).",
+                                source_style_items_json='[{"kind":"sidecar:qml","label":"QGIS QML style file (roads.qml)","path":"D:/data/roads.qml"}]',
+                                visibility=True,
+                                cache_path="styled.parquet",
+                            )
+                        ]
+                    )
+                    started = []
+                    window._start_worker_with_refresh = lambda *args, **kwargs: started.append("started")
+
+                    with patch("grasp.ui.main_window.QMessageBox.question", return_value=QMessageBox.No):
+                        window.start_style_for_scope()
+
+                    self.assertEqual(started, [])
+            finally:
+                window.close()
+
+    def test_start_style_for_scope_can_continue_after_source_style_warning(self) -> None:
+        with patch("grasp.ui.main_window.WEBENGINE_AVAILABLE", False):
+            window = MainWindow()
+            try:
+                with tempfile.TemporaryDirectory() as tmp:
+                    window._set_workspace(tmp)
+                    window.repository.replace_datasets(
+                        [
+                            DatasetRecord(
+                                dataset_id="styled",
+                                source_path="D:/data/roads.geojson",
+                                source_format="geojson",
+                                source_style_summary="Possible source styling detected: QGIS QML style file (roads.qml).",
+                                source_style_items_json='[{"kind":"sidecar:qml","label":"QGIS QML style file (roads.qml)","path":"D:/data/roads.qml"}]',
+                                visibility=True,
+                                cache_path="styled.parquet",
+                            )
+                        ]
+                    )
+                    started = []
+                    window._start_worker_with_refresh = lambda *args, **kwargs: started.append("started")
+
+                    with patch("grasp.ui.main_window.QMessageBox.question", return_value=QMessageBox.Yes):
+                        window.start_style_for_scope()
+
+                    self.assertEqual(started, ["started"])
             finally:
                 window.close()
 
@@ -1461,6 +1712,66 @@ class MainWindowTests(unittest.TestCase):
             finally:
                 window.close()
 
+    def test_start_regroup_uses_preview_job(self) -> None:
+        with patch("grasp.ui.main_window.WEBENGINE_AVAILABLE", False):
+            window = MainWindow()
+            try:
+                with tempfile.TemporaryDirectory() as tmp:
+                    window._set_workspace(tmp)
+                    window.repository.replace_datasets(
+                        [
+                            DatasetRecord(dataset_id="a", source_path="D:/data/a.geojson", source_format="geojson", cache_path="a.parquet"),
+                            DatasetRecord(dataset_id="b", source_path="D:/data/b.geojson", source_format="geojson", cache_path="b.parquet"),
+                        ]
+                    )
+                    window.refresh_all_views()
+                    group_item = window.tree.topLevelItem(0)
+                    group_item.child(0).setCheckState(0, Qt.Checked)
+                    captured: dict[str, object] = {}
+                    window._start_regroup_preview_job = lambda dataset_ids, target_group_count, *, scope_label: captured.update(
+                        {
+                            "dataset_ids": list(dataset_ids),
+                            "target_group_count": target_group_count,
+                            "scope_label": scope_label,
+                        }
+                    )
+
+                    with patch.object(window, "_prompt_group_count", return_value=2):
+                        window.grouping_scope_combo.setCurrentIndex(window.grouping_scope_combo.findData("checked"))
+                        window.start_regroup_for_scope()
+
+                    self.assertEqual(
+                        captured,
+                        {"dataset_ids": ["a"], "target_group_count": 2, "scope_label": "checked datasets"},
+                    )
+            finally:
+                window.close()
+
+    def test_confirm_regroup_assignments_shows_group_preview(self) -> None:
+        with patch("grasp.ui.main_window.WEBENGINE_AVAILABLE", False):
+            window = MainWindow()
+            try:
+                with tempfile.TemporaryDirectory() as tmp:
+                    window._set_workspace(tmp)
+                    window.repository.replace_datasets(
+                        [
+                            DatasetRecord(dataset_id="a", source_path="D:/data/a.geojson", source_format="geojson", layer_name="Administrative Districts", cache_path="a.parquet"),
+                            DatasetRecord(dataset_id="b", source_path="D:/data/b.geojson", source_format="geojson", layer_name="Capital Cities", cache_path="b.parquet"),
+                        ]
+                    )
+
+                    with patch("grasp.ui.main_window.QMessageBox.question", return_value=QMessageBox.No) as question:
+                        accepted = window._confirm_regroup_assignments({"a": "Administrative", "b": "Administrative"})
+
+                    self.assertFalse(accepted)
+                    message = question.call_args.args[2]
+                    self.assertIn("AI Regroup proposed 1 group(s) for 2 dataset(s).", message)
+                    self.assertIn("Administrative (2)", message)
+                    self.assertIn("Administrative Districts", message)
+                    self.assertIn("Capital Cities", message)
+            finally:
+                window.close()
+
     def test_regroup_does_not_reclassify_existing_ungrouped_datasets_before_grouping(self) -> None:
         with patch("grasp.ui.main_window.WEBENGINE_AVAILABLE", False):
             window = MainWindow()
@@ -1612,10 +1923,60 @@ class MainWindowTests(unittest.TestCase):
             finally:
                 window.close()
 
-    def test_regroup_uses_local_grouping_when_openai_is_unavailable(self) -> None:
+    def test_complete_regroup_preview_applies_assignments_after_confirmation(self) -> None:
         with patch("grasp.ui.main_window.WEBENGINE_AVAILABLE", False):
             window = MainWindow()
             try:
+                with tempfile.TemporaryDirectory() as tmp:
+                    window._set_workspace(tmp)
+                    window.repository.replace_datasets(
+                        [
+                            DatasetRecord(dataset_id="a", source_path="D:/data/a.geojson", source_format="geojson", group_id="ungrouped", cache_path="a.parquet"),
+                            DatasetRecord(dataset_id="b", source_path="D:/data/b.geojson", source_format="geojson", group_id="ungrouped", cache_path="b.parquet"),
+                        ]
+                    )
+                    token = window._begin_background_activity("Regrouping checked datasets...", activity="AI Regroup")
+                    window._review_job_running = True
+
+                    with patch.object(window, "_confirm_regroup_assignments", return_value=True):
+                        window._complete_regroup_preview(token, {"assignments": {"a": "Administrative", "b": "Protected Area"}})
+
+                    self.assertEqual(window.repository.get_dataset("a").group_id, "administrative")
+                    self.assertEqual(window.repository.get_dataset("b").group_id, "protected-area")
+                    self.assertFalse(window._review_job_running)
+            finally:
+                window.close()
+
+    def test_complete_regroup_preview_keeps_groups_unchanged_when_cancelled(self) -> None:
+        with patch("grasp.ui.main_window.WEBENGINE_AVAILABLE", False):
+            window = MainWindow()
+            try:
+                with tempfile.TemporaryDirectory() as tmp:
+                    window._set_workspace(tmp)
+                    window.repository.replace_datasets(
+                        [
+                            DatasetRecord(dataset_id="a", source_path="D:/data/a.geojson", source_format="geojson", group_id="transport", cache_path="a.parquet"),
+                            DatasetRecord(dataset_id="b", source_path="D:/data/b.geojson", source_format="geojson", group_id="ungrouped", cache_path="b.parquet"),
+                        ]
+                    )
+                    token = window._begin_background_activity("Regrouping checked datasets...", activity="AI Regroup")
+                    window._review_job_running = True
+
+                    with patch.object(window, "_confirm_regroup_assignments", return_value=False):
+                        window._complete_regroup_preview(token, {"assignments": {"a": "Administrative", "b": "Protected Area"}})
+
+                    self.assertEqual(window.repository.get_dataset("a").group_id, "transport")
+                    self.assertEqual(window.repository.get_dataset("b").group_id, "ungrouped")
+                    self.assertFalse(window._review_job_running)
+            finally:
+                window.close()
+
+    def test_regroup_uses_local_grouping_when_openai_is_unavailable(self) -> None:
+        with patch.dict("os.environ", {"OPENAI_API_KEY": ""}, clear=False), patch("grasp.ui.main_window.WEBENGINE_AVAILABLE", False):
+            window = MainWindow()
+            try:
+                window.current_settings.openai_api_key = ""
+                window._rebuild_ai_services()
                 with tempfile.TemporaryDirectory() as tmp:
                     window._set_workspace(tmp)
                     window.repository.replace_datasets(

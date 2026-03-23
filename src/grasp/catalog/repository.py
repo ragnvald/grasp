@@ -43,6 +43,8 @@ CREATE TABLE IF NOT EXISTS datasets (
     sort_order INTEGER NOT NULL DEFAULT 0,
     visibility INTEGER NOT NULL DEFAULT 1,
     include_in_export INTEGER NOT NULL DEFAULT 0,
+    source_style_summary TEXT NOT NULL DEFAULT '',
+    source_style_items_json TEXT NOT NULL DEFAULT '[]',
     cache_path TEXT NOT NULL DEFAULT '',
     ai_confidence REAL NOT NULL DEFAULT 0,
     suggested_group TEXT NOT NULL DEFAULT '',
@@ -81,6 +83,8 @@ CREATE TABLE IF NOT EXISTS styles (
 DATASET_COLUMN_MIGRATIONS = {
     "source_mtime_ns": "INTEGER NOT NULL DEFAULT 0",
     "source_size_bytes": "INTEGER NOT NULL DEFAULT 0",
+    "source_style_summary": "TEXT NOT NULL DEFAULT ''",
+    "source_style_items_json": "TEXT NOT NULL DEFAULT '[]'",
 }
 
 
@@ -196,9 +200,9 @@ class CatalogRepository:
                         dataset_id, source_path, source_format, source_mtime_ns, source_size_bytes, layer_name,
                         display_name_user, display_name_ai, description_user, description_ai,
                         geometry_type, feature_count, crs, bbox_wgs84, column_profile_json,
-                        fingerprint, group_id, sort_order, visibility, include_in_export,
+                        fingerprint, group_id, sort_order, visibility, include_in_export, source_style_summary, source_style_items_json,
                         cache_path, ai_confidence, suggested_group, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(dataset_id) DO UPDATE SET
                         source_path = excluded.source_path,
                         source_format = excluded.source_format,
@@ -219,6 +223,8 @@ class CatalogRepository:
                         sort_order = excluded.sort_order,
                         visibility = excluded.visibility,
                         include_in_export = excluded.include_in_export,
+                        source_style_summary = excluded.source_style_summary,
+                        source_style_items_json = excluded.source_style_items_json,
                         cache_path = excluded.cache_path,
                         ai_confidence = excluded.ai_confidence,
                         suggested_group = excluded.suggested_group,
@@ -245,6 +251,8 @@ class CatalogRepository:
                         dataset.sort_order if dataset.sort_order else index,
                         int(dataset.visibility),
                         int(dataset.include_in_export),
+                        dataset.source_style_summary,
+                        dataset.source_style_items_json,
                         dataset.cache_path,
                         dataset.ai_confidence,
                         dataset.suggested_group,
@@ -268,7 +276,7 @@ class CatalogRepository:
                        source_mtime_ns, source_size_bytes,
                        display_name_user, display_name_ai, description_user, description_ai,
                        geometry_type, feature_count, crs, bbox_wgs84, column_profile_json,
-                       fingerprint, group_id, sort_order, visibility, include_in_export,
+                       fingerprint, group_id, sort_order, visibility, include_in_export, source_style_summary, source_style_items_json,
                        cache_path, ai_confidence, suggested_group
                 FROM datasets
                 ORDER BY group_id, sort_order, COALESCE(display_name_user, display_name_ai, layer_name, source_path)
@@ -284,7 +292,7 @@ class CatalogRepository:
                        source_mtime_ns, source_size_bytes,
                        display_name_user, display_name_ai, description_user, description_ai,
                        geometry_type, feature_count, crs, bbox_wgs84, column_profile_json,
-                       fingerprint, group_id, sort_order, visibility, include_in_export,
+                       fingerprint, group_id, sort_order, visibility, include_in_export, source_style_summary, source_style_items_json,
                        cache_path, ai_confidence, suggested_group
                 FROM datasets
                 WHERE dataset_id = ?
@@ -456,16 +464,17 @@ class CatalogRepository:
                     str(row["dataset_id"]): sanitize_group_id(str(row["group_id"] or "ungrouped"))
                     for row in rows
                 }
-            for group_id in sorted(suggested_groups):
-                conn.execute(
-                    """
-                    INSERT OR IGNORE INTO groups (id, name, sort_order, created_at)
-                    VALUES (
-                        ?, ?, (SELECT COALESCE(MAX(sort_order), -1) + 1 FROM groups), ?
+            if auto_assign_group:
+                for group_id in sorted(suggested_groups):
+                    conn.execute(
+                        """
+                        INSERT OR IGNORE INTO groups (id, name, sort_order, created_at)
+                        VALUES (
+                            ?, ?, (SELECT COALESCE(MAX(sort_order), -1) + 1 FROM groups), ?
+                        )
+                        """,
+                        (group_id, display_group_name(group_id), _utc_now()),
                     )
-                    """,
-                    (group_id, display_group_name(group_id), _utc_now()),
-                )
             for dataset_id, payload, suggested_title, suggested_description, confidence, suggested_group in normalized_updates:
                 updated_at = _utc_now()
                 conn.execute(

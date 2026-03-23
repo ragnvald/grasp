@@ -25,6 +25,7 @@ except Exception:
     make_valid = None
 
 from grasp.models import DatasetRecord
+from grasp.source_style import detect_source_style_evidence, summarize_source_style_evidence
 from grasp.workspace import ProjectWorkspace, ensure_workspace, iter_supported_files, make_dataset_id
 
 
@@ -129,6 +130,12 @@ class IngestService:
         if progress_callback:
             progress_callback(100)
         self._apply_default_visibility(datasets)
+        source_style_count = sum(1 for dataset in datasets if dataset.has_source_style)
+        if source_style_count:
+            self._emit(
+                status_callback,
+                f"Detected possible source styling for {source_style_count} dataset(s). Review before generating AI styles.",
+            )
         self._emit(status_callback, f"Scan complete: {len(datasets)} dataset(s)")
         return datasets
 
@@ -196,6 +203,9 @@ class IngestService:
     ) -> DatasetRecord | None:
         dataset_id = make_dataset_id(workspace.root_path, file_path, layer_name)
         source_mtime_ns, source_size_bytes = self._source_signature(file_path)
+        source_style_items = detect_source_style_evidence(file_path, layer_name)
+        source_style_summary = summarize_source_style_evidence(source_style_items)
+        source_style_items_json = json.dumps(source_style_items, ensure_ascii=False)
         if existing_record is not None and self._can_reuse_existing_record(existing_record, source_mtime_ns, source_size_bytes):
             self._emit(status_callback, f"Reusing existing catalog metadata for {file_path.name}{':' + layer_name if layer_name else ''}")
             return self._reuse_existing_record(
@@ -205,6 +215,8 @@ class IngestService:
                 sort_order,
                 source_mtime_ns,
                 source_size_bytes,
+                source_style_summary,
+                source_style_items_json,
             )
         try:
             summary = self._summarize_dataset(file_path, layer_name, status_callback=status_callback)
@@ -227,6 +239,8 @@ class IngestService:
             fingerprint=self._fingerprint_from_summary(summary),
             sort_order=sort_order,
             visibility=summary.feature_count <= MAX_AUTO_VISIBLE_FEATURES,
+            source_style_summary=source_style_summary,
+            source_style_items_json=source_style_items_json,
             cache_path=str(cache_path),
         )
 
@@ -474,6 +488,8 @@ class IngestService:
         sort_order: int,
         source_mtime_ns: int,
         source_size_bytes: int,
+        source_style_summary: str,
+        source_style_items_json: str,
     ) -> DatasetRecord:
         migrated_cache_path = str(workspace.dataset_cache_path(existing_record.dataset_id))
         return DatasetRecord(
@@ -497,6 +513,8 @@ class IngestService:
             sort_order=existing_record.sort_order if existing_record.sort_order else sort_order,
             visibility=existing_record.visibility,
             include_in_export=existing_record.include_in_export,
+            source_style_summary=source_style_summary,
+            source_style_items_json=source_style_items_json,
             cache_path=migrated_cache_path,
             ai_confidence=existing_record.ai_confidence,
             suggested_group=existing_record.suggested_group,

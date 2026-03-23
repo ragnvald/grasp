@@ -309,6 +309,67 @@ class CatalogRepositoryTests(unittest.TestCase):
             self.assertEqual(repo.get_dataset("b").group_id, "manual-group")
             self.assertIn(("protected-area", "Protected Area"), repo.list_groups())
 
+    def test_upsert_understandings_bulk_without_auto_assign_keeps_groups_unchanged(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = CatalogRepository(Path(tmp) / "catalog.sqlite")
+            repo.replace_datasets(
+                [
+                    DatasetRecord(
+                        dataset_id="a",
+                        source_path="D:/data/a.geojson",
+                        source_format="geojson",
+                        group_id="ungrouped",
+                        cache_path="a.parquet",
+                    )
+                ]
+            )
+
+            changed = repo.upsert_understandings_bulk(
+                [
+                    (
+                        "a",
+                        DatasetUnderstanding(
+                            suggested_title="Coastal Buffer",
+                            suggested_description="Auto description",
+                            suggested_group="coastal",
+                            confidence=0.8,
+                        ),
+                    )
+                ],
+                auto_assign_group=False,
+            )
+
+            stored = repo.get_dataset("a")
+            self.assertEqual(changed, 1)
+            self.assertEqual(stored.display_name_ai, "Coastal Buffer")
+            self.assertEqual(stored.suggested_group, "coastal")
+            self.assertEqual(stored.group_id, "ungrouped")
+            self.assertNotIn(("coastal", "Coastal"), repo.list_groups())
+
+    def test_repository_persists_source_style_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = CatalogRepository(Path(tmp) / "catalog.sqlite")
+            repo.replace_datasets(
+                [
+                    DatasetRecord(
+                        dataset_id="styled",
+                        source_path="D:/data/roads.geojson",
+                        source_format="geojson",
+                        source_style_summary="Possible source styling detected: QGIS QML style file (roads.qml).",
+                        source_style_items_json='[{"kind":"sidecar:qml","label":"QGIS QML style file (roads.qml)","path":"D:/data/roads.qml"}]',
+                        cache_path="styled.parquet",
+                    )
+                ]
+            )
+
+            stored = repo.get_dataset("styled")
+
+            self.assertIsNotNone(stored)
+            self.assertTrue(stored.has_source_style)
+            self.assertIn("roads.qml", stored.source_style_summary)
+            self.assertEqual(len(stored.source_style_items), 1)
+            self.assertEqual(stored.source_style_items[0]["kind"], "sidecar:qml")
+
 
 if __name__ == "__main__":
     unittest.main()

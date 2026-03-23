@@ -122,6 +122,45 @@ class IngestServiceTests(unittest.TestCase):
             self.assertEqual(second[0].dataset_id, first[0].dataset_id)
             self.assertEqual(second[0].fingerprint, first[0].fingerprint)
 
+    def test_scan_detects_sidecar_source_styling(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            points = gpd.GeoDataFrame(
+                {"name": ["a"]},
+                geometry=[Point(10.4, 63.4)],
+                crs="EPSG:4326",
+            )
+            points.to_file(root / "points.geojson", driver="GeoJSON")
+            (root / "points.qml").write_text("<qml/>", encoding="utf-8")
+
+            service = IngestService()
+            datasets = service.scan_folder(root)
+
+            self.assertEqual(len(datasets), 1)
+            self.assertTrue(datasets[0].has_source_style)
+            self.assertIn("QGIS QML style file", datasets[0].source_style_summary)
+
+    def test_scan_refreshes_source_style_flags_when_sidecar_is_added(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            points = gpd.GeoDataFrame(
+                {"name": ["a"]},
+                geometry=[Point(10.4, 63.4)],
+                crs="EPSG:4326",
+            )
+            points.to_file(root / "points.geojson", driver="GeoJSON")
+
+            service = IngestService()
+            first = service.scan_folder(root)
+            self.assertFalse(first[0].has_source_style)
+
+            (root / "points.qml").write_text("<qml/>", encoding="utf-8")
+            second = service.scan_folder(root, first)
+
+            self.assertEqual(len(second), 1)
+            self.assertTrue(second[0].has_source_style)
+            self.assertIn("points.qml", second[0].source_style_summary)
+
     def test_workspace_uses_data_out_and_ignores_internal_outputs(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

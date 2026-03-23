@@ -13,6 +13,19 @@ class MapAssetTests(unittest.TestCase):
         self.assertIn('createBrowserButton("Show all selected layers"', html)
         self.assertIn("function zoomToCurrentLayerExtent()", html)
 
+    def test_leaflet_asset_allows_layer_list_to_be_hidden(self) -> None:
+        html = self._leaflet_map_html()
+        self.assertIn('createMapControlButton("Show Layers"', html)
+        self.assertIn("function toggleLayerControlVisibility()", html)
+        self.assertIn('layerListButton.textContent = layerListVisible ? "Hide Layers" : "Show Layers";', html)
+        self.assertIn(".leaflet-control-layers.grasp-layers-hidden {", html)
+
+    def test_leaflet_asset_caps_show_all_mode_for_safety(self) -> None:
+        html = self._leaflet_map_html()
+        self.assertIn("const MAX_VISIBLE_LAYER_RENDER_COUNT = 24;", html)
+        self.assertIn('availableDatasets.slice(0, MAX_VISIBLE_LAYER_RENDER_COUNT)', html)
+        self.assertIn('Loaded first " + loaded.visibleLayers.length + " of " + loaded.visibleCount + " available dataset(s) (safety limit).', html)
+
     def test_leaflet_asset_handles_resize_for_leaflet_and_offline_modes(self) -> None:
         html = self._leaflet_map_html()
         self.assertIn("map.invalidateSize(false);", html)

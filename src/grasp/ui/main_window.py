@@ -28,6 +28,7 @@ from grasp.intelligence.providers import (
 )
 from grasp.intelligence.service import IntelligenceService, SearchService
 from grasp.models import DatasetUnderstanding
+from grasp.name_simplification import suggest_simplified_dataset_name
 from grasp.qt_compat import (
     QAction,
     QApplication,
@@ -69,6 +70,7 @@ from grasp.qt_compat import (
     WEBENGINE_AVAILABLE,
     WEBENGINE_UNAVAILABLE_MESSAGE,
 )
+from grasp.source_style import describe_source_style_evidence
 from grasp.ui.map_bridge import MapBridge
 from grasp.ui.settings_dialog import MODEL_OPTIONS
 from grasp.ui.workers import FunctionWorker
@@ -80,6 +82,8 @@ from grasp.workspace import catalog_exists, ensure_workspace, sanitize_group_id
 REGROUP_OTHERS_GROUP_NAME = "Others"
 REGROUP_HINT_PREPARATION_TIMEOUT_S = 120.0
 REGROUP_TOTAL_TIMEOUT_S = 120.0
+REGROUP_PREVIEW_GROUP_LIMIT = 8
+REGROUP_PREVIEW_DATASET_LIMIT = 4
 INITIAL_HEURISTIC_CLASSIFICATION_TIMEOUT_S = 60.0
 REVIEW_JOB_STALE_LOCK_TIMEOUT_S = 300.0
 REMOTE_AI_REQUEST_COOLDOWN_S = 0.35
@@ -300,6 +304,14 @@ class MainWindow(QMainWindow):
         row.addWidget(self.reset_data_button)
         layout.addLayout(row)
 
+        self.simplify_import_names_checkbox = QCheckBox("Simplify long dataset names on import")
+        self.simplify_import_names_checkbox.setChecked(False)
+        self.simplify_import_names_checkbox.setToolTip(
+            "Shorten long technical source names during import and move the omitted source naming context into "
+            "Description. Existing manual Name/Description edits are kept."
+        )
+        layout.addWidget(self.simplify_import_names_checkbox)
+
         self.import_summary = QLabel("No folder loaded.")
         layout.addWidget(self.import_summary)
 
@@ -307,15 +319,15 @@ class MainWindow(QMainWindow):
         self.import_progress.setRange(0, 100)
         layout.addWidget(self.import_progress)
 
-        self.import_table = QTableWidget(0, 5)
-        self.import_table.setHorizontalHeaderLabels(["Name", "Format", "Geometry", "Features", "Source"])
+        self.import_table = QTableWidget(0, 6)
+        self.import_table.setHorizontalHeaderLabels(["Name", "Format", "Geometry", "Features", "Styling", "Source"])
         self.import_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.import_table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.import_table.setSelectionMode(QAbstractItemView.SingleSelection)
         self.import_table.setSortingEnabled(True)
         self.import_table.horizontalHeader().setSortIndicatorShown(True)
         self.import_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
-        self.import_table.horizontalHeader().setSectionResizeMode(4, QHeaderView.Stretch)
+        self.import_table.horizontalHeader().setSectionResizeMode(5, QHeaderView.Stretch)
         layout.addWidget(self.import_table, 1)
 
         self.import_log_note = QLabel(
@@ -354,7 +366,7 @@ class MainWindow(QMainWindow):
 
         self.review_actions_note = QLabel(
             "Find info (fast) runs a local first-pass without external AI. "
-            "Find info (AI) updates AI title, AI description and AI group. "
+            "Find info (AI) updates AI title, AI description and an AI group suggestion only. "
             "Find sources keeps the current understanding and refreshes source lookup only."
         )
         self.review_actions_note.setWordWrap(True)
@@ -501,6 +513,10 @@ class MainWindow(QMainWindow):
         self.feature_count_label = QLabel("-")
         dataset_form.addRow("Features", self.feature_count_label)
 
+        self.source_style_label = QLabel("-")
+        self.source_style_label.setWordWrap(True)
+        dataset_form.addRow("Source styling", self.source_style_label)
+
         self.ai_title_label = QLabel("-")
         self.ai_title_label.setWordWrap(True)
         dataset_form.addRow("AI title", self.ai_title_label)
@@ -573,7 +589,8 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.map_summary)
 
         self.map_style_note = QLabel(
-            "Generate styles from dataset names and descriptions when you want a coherent map preview and QGIS-ready export."
+            "Generate styles from dataset names and descriptions when you want a coherent map preview and QGIS-ready export. "
+            "If possible source styling is detected during import, GRASP warns before generating new AI-driven styling."
         )
         self.map_style_note.setWordWrap(True)
         layout.addWidget(self.map_style_note)
@@ -807,6 +824,18 @@ class MainWindow(QMainWindow):
             return
         sync_summary = self.repository.replace_datasets(datasets)
         self.append_activity_log(f"Persisted {len(datasets)} dataset(s) to local catalog.", activity=REBUILD_ARCHIVE_LABEL)
+        simplified_count = self._apply_import_name_simplification(datasets)
+        if simplified_count:
+            self.append_activity_log(
+                f"Applied simplified import names to {simplified_count} dataset(s); source naming context was moved into Description.",
+                activity=REBUILD_ARCHIVE_LABEL,
+            )
+        source_style_count = sum(1 for dataset in datasets if dataset.has_source_style)
+        if source_style_count:
+            self.append_activity_log(
+                f"Detected possible source styling for {source_style_count} dataset(s). Review Source styling before using Generate Styles.",
+                activity=REBUILD_ARCHIVE_LABEL,
+            )
         if sync_summary["reused_ids"]:
             self.append_activity_log(
                 f"Reused {len(sync_summary['reused_ids'])} unchanged dataset(s) from the existing catalog.",
@@ -830,6 +859,40 @@ class MainWindow(QMainWindow):
                 "No new or changed datasets detected. Existing AI understanding and sources were kept.",
                 activity=REBUILD_ARCHIVE_LABEL,
             )
+
+    def _apply_import_name_simplification(self, datasets) -> int:
+        if self.repository is None:
+            return 0
+        if not self.simplify_import_names_checkbox.isChecked():
+            return 0
+        updated = 0
+        for dataset in datasets:
+            if dataset.display_name_user.strip():
+                continue
+            source_name, source_kind = self._import_name_source(dataset)
+            suggestion = suggest_simplified_dataset_name(source_name, source_kind=source_kind)
+            if suggestion is None:
+                continue
+            new_description = dataset.description_user.strip()
+            if not new_description:
+                new_description = suggestion.description_note
+            self.repository.save_dataset_user_fields(
+                dataset.dataset_id,
+                display_name_user=suggestion.display_name,
+                description_user=new_description,
+                visibility=dataset.visibility,
+                include_in_export=dataset.include_in_export,
+            )
+            dataset.display_name_user = suggestion.display_name
+            dataset.description_user = new_description
+            updated += 1
+        return updated
+
+    def _import_name_source(self, dataset) -> tuple[str, str]:
+        if dataset.layer_name.strip():
+            return dataset.layer_name.strip(), "layer"
+        source_name = Path(dataset.source_basename).stem or dataset.source_basename
+        return source_name, "file"
 
     def save_settings(self) -> None:
         try:
@@ -1045,15 +1108,10 @@ class MainWindow(QMainWindow):
         target_group_count = self._prompt_group_count(len(dataset_ids), "checked datasets" if scope == "checked" else "all datasets")
         if target_group_count <= 0:
             return
-        self._start_worker(
-            self._regroup_dataset_ids,
+        self._start_regroup_preview_job(
             dataset_ids,
             target_group_count,
-            success_message="AI regrouping completed.",
-            start_message=f"Regrouping {'checked datasets' if scope == 'checked' else 'all datasets'}...",
-            activity_name="AI Regroup",
-            refresh_after=True,
-            track_review_job=True,
+            scope_label="checked datasets" if scope == "checked" else "all datasets",
         )
 
     def start_regroup_all(self) -> None:
@@ -1071,6 +1129,8 @@ class MainWindow(QMainWindow):
                 "Choose datasets",
                 "Mark one or more datasets as Visible on map, or switch scope to Show all first.",
             )
+            return
+        if not self._confirm_style_generation_for_dataset_ids(dataset_ids):
             return
         self._start_worker_with_refresh(
             self._style_dataset_ids,
@@ -1422,6 +1482,80 @@ class MainWindow(QMainWindow):
             return 0
         return int(value)
 
+    def _datasets_with_source_style(self, dataset_ids: list[str]):
+        if self.repository is None:
+            return []
+        datasets = []
+        for dataset_id in dataset_ids:
+            dataset = self.repository.get_dataset(dataset_id)
+            if dataset is None or not dataset.has_source_style:
+                continue
+            datasets.append(dataset)
+        return datasets
+
+    def _confirm_style_generation_for_dataset_ids(self, dataset_ids: list[str]) -> bool:
+        flagged_datasets = self._datasets_with_source_style(dataset_ids)
+        if not flagged_datasets:
+            return True
+        preview_lines = [
+            f"- {dataset.preferred_name}: {dataset.source_style_summary}"
+            for dataset in flagged_datasets[:4]
+        ]
+        if len(flagged_datasets) > 4:
+            preview_lines.append(f"- +{len(flagged_datasets) - 4} more dataset(s)")
+        message = (
+            f"Possible source styling was detected for {len(flagged_datasets)} selected dataset(s).\n\n"
+            "Generating AI styles does not modify the source files, but it will create new GRASP styling for map preview and export.\n\n"
+            "Detected examples:\n"
+            f"{chr(10).join(preview_lines)}\n\n"
+            "Review the existing source styling first if you want that styling to remain the reference. Continue anyway?"
+        )
+        answer = QMessageBox.question(
+            self,
+            "Existing source styling detected",
+            message,
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        return answer == QMessageBox.Yes
+
+    def _confirm_regroup_assignments(self, assignments: dict[str, str]) -> bool:
+        if self.repository is None or not assignments:
+            return False
+        grouped: dict[str, list[str]] = {}
+        for dataset_id, group_name in assignments.items():
+            dataset = self.repository.get_dataset(dataset_id)
+            dataset_name = dataset.preferred_name if dataset is not None else dataset_id
+            grouped.setdefault(str(group_name).strip() or REGROUP_OTHERS_GROUP_NAME, []).append(dataset_name)
+        preview_lines: list[str] = []
+        grouped_items = sorted(grouped.items(), key=lambda item: (-len(item[1]), item[0].lower()))
+        for index, (group_name, dataset_names) in enumerate(grouped_items):
+            if index >= REGROUP_PREVIEW_GROUP_LIMIT:
+                break
+            preview_lines.append(f"{group_name} ({len(dataset_names)})")
+            for dataset_name in sorted(dataset_names, key=str.lower)[:REGROUP_PREVIEW_DATASET_LIMIT]:
+                preview_lines.append(f"  - {dataset_name}")
+            remaining = len(dataset_names) - REGROUP_PREVIEW_DATASET_LIMIT
+            if remaining > 0:
+                preview_lines.append(f"  - +{remaining} more dataset(s)")
+        remaining_groups = len(grouped_items) - REGROUP_PREVIEW_GROUP_LIMIT
+        if remaining_groups > 0:
+            preview_lines.append(f"+{remaining_groups} more proposed group(s)")
+        message = (
+            f"AI Regroup proposed {len(grouped)} group(s) for {len(assignments)} dataset(s).\n\n"
+            "Preview:\n"
+            f"{chr(10).join(preview_lines)}\n\n"
+            "Apply these group assignments?"
+        )
+        answer = QMessageBox.question(
+            self,
+            "Review regroup proposal",
+            message,
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.Yes,
+        )
+        return answer == QMessageBox.Yes
+
     def populate_inspector(self, dataset) -> None:
         self._populating_inspector = True
         try:
@@ -1433,6 +1567,8 @@ class MainWindow(QMainWindow):
                 self.source_path_label.setText("-")
                 self.geometry_label.setText("-")
                 self.feature_count_label.setText("-")
+                self.source_style_label.setText("-")
+                self.source_style_label.setToolTip("")
                 self.ai_title_label.setText("-")
                 self.ai_group_label.setText("-")
                 self.ai_description_box.setPlainText("")
@@ -1444,6 +1580,8 @@ class MainWindow(QMainWindow):
             self.source_path_label.setText(dataset.source_path)
             self.geometry_label.setText(dataset.geometry_type)
             self.feature_count_label.setText(str(dataset.feature_count))
+            self.source_style_label.setText(dataset.source_style_summary or "-")
+            self.source_style_label.setToolTip(describe_source_style_evidence(dataset.source_style_items))
             self.ai_title_label.setText(dataset.display_name_ai or "-")
             self.ai_group_label.setText(dataset.suggested_group or "-")
             self.ai_description_box.setPlainText(dataset.description_ai or "")
@@ -1567,6 +1705,14 @@ class MainWindow(QMainWindow):
             self.import_table.setItem(
                 row_index,
                 4,
+                SortableTableWidgetItem(
+                    "Possible styling" if dataset.has_source_style else "-",
+                    1 if dataset.has_source_style else 0,
+                ),
+            )
+            self.import_table.setItem(
+                row_index,
+                5,
                 SortableTableWidgetItem(dataset.source_path, dataset.source_path.lower()),
             )
         self.import_table.setSortingEnabled(True)
@@ -1576,9 +1722,11 @@ class MainWindow(QMainWindow):
             self.import_summary.setText("No folder loaded.")
         else:
             summary = self.repository.summary()
+            source_style_count = sum(1 for dataset in datasets if dataset.has_source_style)
             self.import_summary.setText(
                 f"Datasets: {summary['dataset_count']} | Groups: {summary['group_count']} | "
-                f"Source candidates: {summary['source_count']} | Styles: {summary['style_count']}"
+                f"Source candidates: {summary['source_count']} | Styles: {summary['style_count']} | "
+                f"Possible source styling: {source_style_count}"
             )
 
     def refresh_tree(self) -> None:
@@ -1960,6 +2108,79 @@ class MainWindow(QMainWindow):
             track_review_job=True,
         )
 
+    def _start_regroup_preview_job(
+        self,
+        dataset_ids: list[str],
+        target_group_count: int,
+        *,
+        scope_label: str,
+    ) -> None:
+        worker = FunctionWorker(self._prepare_regroup_assignments, dataset_ids, target_group_count)
+        log_activity = self._resolve_log_activity("AI Regroup")
+        start_message = f"Regrouping {scope_label}..."
+        progress_token = self._begin_background_activity(start_message, activity=log_activity)
+        self._active_workers[progress_token] = worker
+        self._review_job_running = True
+        self.review_progress.setValue(0)
+        self.review_job_status.setText("Starting background job...")
+        worker.signals.status.connect(self.statusBar().showMessage)
+        worker.signals.status.connect(lambda message, activity=log_activity: self.append_activity_log(message, activity=activity))
+        worker.signals.status.connect(lambda message, token=progress_token: self._update_background_activity_status(token, message))
+        worker.signals.status.connect(self.review_job_status.setText)
+        worker.signals.progress.connect(lambda value, token=progress_token: self._update_background_activity_progress(token, value))
+        worker.signals.progress.connect(self.review_progress.setValue)
+        worker.signals.result.connect(lambda proposal, token=progress_token: self._schedule_regroup_preview(token, proposal))
+        worker.signals.error.connect(lambda message, token=progress_token: self.on_background_error(message, token))
+        worker.signals.finished.connect(lambda token=progress_token: self._release_worker(token))
+        self.thread_pool.start(worker)
+
+    def _schedule_regroup_preview(self, token: int, proposal) -> None:
+        QTimer.singleShot(0, lambda token=token, proposal=proposal: self._complete_regroup_preview(token, proposal))
+
+    def _complete_regroup_preview(self, token: int, proposal) -> None:
+        try:
+            assignments = dict((proposal or {}).get("assignments") or {})
+            if not assignments:
+                self._update_background_activity_progress(token, 100)
+                self.review_progress.setValue(100)
+                self._finish_background_activity(token, "AI regroup produced no assignments.")
+                self.statusBar().showMessage("AI regroup produced no assignments.", 5000)
+                self._on_review_job_finished("AI regroup produced no assignments.")
+                return
+            accepted = self._confirm_regroup_assignments(assignments)
+            if not accepted:
+                self.append_activity_log("Preview cancelled. Group assignments were not applied.", activity="AI Regroup")
+                self._update_background_activity_progress(token, 100)
+                self.review_progress.setValue(100)
+                self._finish_background_activity(token, "AI regroup preview cancelled.")
+                self.statusBar().showMessage("AI regroup preview cancelled.", 5000)
+                self._on_review_job_finished("AI regroup preview cancelled.")
+                return
+
+            def _status_callback(message: str) -> None:
+                self.statusBar().showMessage(message)
+                self.append_activity_log(message, activity="AI Regroup")
+                self._update_background_activity_status(token, message)
+                self.review_job_status.setText(message)
+
+            def _progress_callback(value: int) -> None:
+                self._update_background_activity_progress(token, value)
+                self.review_progress.setValue(value)
+
+            applied = self._apply_regroup_assignments(
+                assignments,
+                status_callback=_status_callback,
+                progress_callback=_progress_callback,
+            )
+            self.append_activity_log("Applying results to the catalog and refreshing views.", activity="AI Regroup")
+            self.refresh_all_views()
+            success_message = f"AI regrouping completed for {applied} dataset(s)."
+            self._finish_background_activity(token, success_message)
+            self.statusBar().showMessage(success_message, 5000)
+            self._on_review_job_finished(success_message)
+        except Exception:
+            self.on_background_error(traceback.format_exc(), token)
+
     def _run_review_job_foreground_with_refresh(
         self,
         fn,
@@ -2214,7 +2435,7 @@ class MainWindow(QMainWindow):
             status_callback(f"Persisting {batch_size} understanding update(s) to the catalog.")
         self.repository.upsert_understandings_bulk(
             pending_updates,
-            auto_assign_group=True,
+            auto_assign_group=False,
         )
         pending_updates.clear()
 
@@ -2241,8 +2462,6 @@ class MainWindow(QMainWindow):
             if callable(enrich_from_sources):
                 understanding = enrich_from_sources(dataset, understanding, sources)
             self.repository.upsert_understanding(dataset_id, understanding)
-            if dataset.group_id in {"", "ungrouped"} and understanding.suggested_group:
-                self.repository.assign_group(dataset_id, understanding.suggested_group)
             self.repository.replace_sources(dataset_id, sources)
             processed += 1
             if progress_callback:
@@ -2295,7 +2514,7 @@ class MainWindow(QMainWindow):
             status_callback(summary)
         return processed
 
-    def _regroup_dataset_ids(
+    def _prepare_regroup_assignments(
         self,
         dataset_ids: list[str],
         target_group_count: int,
@@ -2362,7 +2581,7 @@ class MainWindow(QMainWindow):
             )
 
         if not datasets and not timed_out_dataset_ids:
-            return 0
+            return {"assignments": {}}
 
         assignments: dict[str, str] = {}
         if datasets:
@@ -2434,9 +2653,17 @@ class MainWindow(QMainWindow):
                 )
             assignments = {dataset_id: REGROUP_OTHERS_GROUP_NAME for dataset_id in timed_out_dataset_ids}
 
-        if not assignments:
-            return 0
+        return {"assignments": assignments}
 
+    def _apply_regroup_assignments(
+        self,
+        assignments: dict[str, str],
+        *,
+        status_callback=None,
+        progress_callback=None,
+    ) -> int:
+        if self.repository is None or not assignments:
+            return 0
         if status_callback:
             status_callback(f"Applying {len(assignments)} group assignment(s) to the catalog.")
         if progress_callback:
@@ -2454,6 +2681,26 @@ class MainWindow(QMainWindow):
         if progress_callback:
             progress_callback(100)
         return applied
+
+    def _regroup_dataset_ids(
+        self,
+        dataset_ids: list[str],
+        target_group_count: int,
+        *,
+        status_callback=None,
+        progress_callback=None,
+    ) -> int:
+        proposal = self._prepare_regroup_assignments(
+            dataset_ids,
+            target_group_count,
+            status_callback=status_callback,
+            progress_callback=progress_callback,
+        )
+        return self._apply_regroup_assignments(
+            dict(proposal.get("assignments") or {}),
+            status_callback=status_callback,
+            progress_callback=progress_callback,
+        )
 
     def _group_datasets_with_timeout(
         self,
