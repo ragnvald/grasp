@@ -68,6 +68,15 @@ class MapAssetTests(unittest.TestCase):
         self.assertIn("font-size: 14px;", html)
         self.assertIn("text-rendering: optimizeLegibility;", html)
 
+    def test_leaflet_asset_breaks_long_popup_words(self) -> None:
+        html = self._leaflet_map_html()
+        self.assertIn(".offline-popup {", html)
+        self.assertIn(".leaflet-popup-content {", html)
+        self.assertIn(".dataset-popup .popup-description {", html)
+        self.assertIn(".dataset-popup .popup-attributes div {", html)
+        self.assertIn("overflow-wrap: anywhere;", html)
+        self.assertIn("word-break: break-word;", html)
+
     def _leaflet_map_html(self) -> str:
         path = Path("D:/code/codex_mesa/src/grasp/ui/assets/leaflet_map.html")
         return path.read_text(encoding="utf-8")
