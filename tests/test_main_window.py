@@ -10,7 +10,7 @@ from grasp.branding import APP_AUTHOR, APP_TAGLINE, APP_WINDOW_TITLE
 from grasp.intelligence.providers import OpenAIClassificationProvider
 from grasp.intelligence.service import IntelligenceService
 from grasp.models import DatasetRecord, DatasetUnderstanding, SourceCandidate
-from grasp.qt_compat import QApplication, QAbstractItemView, QMessageBox, QPlainTextEdit, Qt
+from grasp.qt_compat import QApplication, QAbstractItemView, QDialog, QLabel, QMessageBox, QPlainTextEdit, Qt
 from grasp.ui.main_window import MAP_HTTP_USER_AGENT, MainWindow
 
 
@@ -1760,15 +1760,34 @@ class MainWindowTests(unittest.TestCase):
                         ]
                     )
 
-                    with patch("grasp.ui.main_window.QMessageBox.question", return_value=QMessageBox.No) as question:
+                    dialog = window._create_regroup_confirmation_dialog({"a": "Administrative", "b": "Administrative"})
+                    self.assertIsNotNone(dialog)
+                    summary_label = dialog.findChild(QLabel, "regroupSummaryLabel")
+                    preview_box = dialog.findChild(QPlainTextEdit, "regroupPreviewBox")
+                    question_label = dialog.findChild(QLabel, "regroupQuestionLabel")
+
+                    self.assertIsNotNone(summary_label)
+                    self.assertIsNotNone(preview_box)
+                    self.assertIsNotNone(question_label)
+                    self.assertEqual(dialog.windowTitle(), "Review regroup proposal")
+                    self.assertIn("AI Regroup proposed 1 group(s) for 2 dataset(s).", summary_label.text())
+                    self.assertIn("Administrative (2)", preview_box.toPlainText())
+                    self.assertIn("Administrative Districts", preview_box.toPlainText())
+                    self.assertIn("Capital Cities", preview_box.toPlainText())
+                    self.assertIn("drag datasets between groups in the left pane", question_label.text().lower())
+
+                    with patch("grasp.ui.main_window.QDialog.exec", return_value=QDialog.Rejected):
                         accepted = window._confirm_regroup_assignments({"a": "Administrative", "b": "Administrative"})
 
                     self.assertFalse(accepted)
-                    message = question.call_args.args[2]
-                    self.assertIn("AI Regroup proposed 1 group(s) for 2 dataset(s).", message)
-                    self.assertIn("Administrative (2)", message)
-                    self.assertIn("Administrative Districts", message)
-                    self.assertIn("Capital Cities", message)
+            finally:
+                window.close()
+
+    def test_review_tab_mentions_drag_and_drop_grouping(self) -> None:
+        with patch("grasp.ui.main_window.WEBENGINE_AVAILABLE", False):
+            window = MainWindow()
+            try:
+                self.assertIn("Drag datasets between groups in the left pane", window.datasets_help_note.text())
             finally:
                 window.close()
 

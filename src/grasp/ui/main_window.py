@@ -35,6 +35,8 @@ from grasp.qt_compat import (
     QAbstractItemView,
     QCheckBox,
     QComboBox,
+    QDialog,
+    QDialogButtonBox,
     QFileDialog,
     QFormLayout,
     QGroupBox,
@@ -404,6 +406,12 @@ class MainWindow(QMainWindow):
         self.tree.itemChanged.connect(self.on_tree_item_changed)
         self.tree.orderingChanged.connect(self.on_tree_order_changed)
         datasets_group_layout.addWidget(self.tree, 1)
+
+        self.datasets_help_note = QLabel(
+            "Tip: Drag datasets between groups in the left pane to reorganize them manually."
+        )
+        self.datasets_help_note.setWordWrap(True)
+        datasets_group_layout.addWidget(self.datasets_help_note)
 
         splitter.addWidget(self.datasets_group_box)
 
@@ -1519,9 +1527,9 @@ class MainWindow(QMainWindow):
         )
         return answer == QMessageBox.Yes
 
-    def _confirm_regroup_assignments(self, assignments: dict[str, str]) -> bool:
+    def _create_regroup_confirmation_dialog(self, assignments: dict[str, str]) -> QDialog | None:
         if self.repository is None or not assignments:
-            return False
+            return None
         grouped: dict[str, list[str]] = {}
         for dataset_id, group_name in assignments.items():
             dataset = self.repository.get_dataset(dataset_id)
@@ -1541,20 +1549,55 @@ class MainWindow(QMainWindow):
         remaining_groups = len(grouped_items) - REGROUP_PREVIEW_GROUP_LIMIT
         if remaining_groups > 0:
             preview_lines.append(f"+{remaining_groups} more proposed group(s)")
-        message = (
-            f"AI Regroup proposed {len(grouped)} group(s) for {len(assignments)} dataset(s).\n\n"
-            "Preview:\n"
-            f"{chr(10).join(preview_lines)}\n\n"
-            "Apply these group assignments?"
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Review regroup proposal")
+        dialog.setModal(True)
+        dialog.setObjectName("regroupReviewDialog")
+        dialog.setMinimumWidth(560)
+        dialog.resize(680, 520)
+
+        layout = QVBoxLayout(dialog)
+
+        summary_label = QLabel(f"AI Regroup proposed {len(grouped)} group(s) for {len(assignments)} dataset(s).")
+        summary_label.setObjectName("regroupSummaryLabel")
+        summary_label.setWordWrap(True)
+        summary_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        layout.addWidget(summary_label)
+
+        preview_label = QLabel("Preview:")
+        preview_label.setObjectName("regroupPreviewLabel")
+        layout.addWidget(preview_label)
+
+        # Keep the approval dialog usable even when the regroup preview is long.
+        preview_box = QPlainTextEdit()
+        preview_box.setObjectName("regroupPreviewBox")
+        preview_box.setReadOnly(True)
+        preview_box.setLineWrapMode(QPlainTextEdit.WidgetWidth)
+        preview_box.setMinimumHeight(220)
+        preview_box.setPlainText("\n".join(preview_lines))
+        layout.addWidget(preview_box, 1)
+
+        question_label = QLabel(
+            "Apply these group assignments? You can still drag datasets between groups in the left pane afterward."
         )
-        answer = QMessageBox.question(
-            self,
-            "Review regroup proposal",
-            message,
-            QMessageBox.Yes | QMessageBox.No,
-            QMessageBox.Yes,
-        )
-        return answer == QMessageBox.Yes
+        question_label.setObjectName("regroupQuestionLabel")
+        question_label.setWordWrap(True)
+        layout.addWidget(question_label)
+
+        button_box = QDialogButtonBox(QDialogButtonBox.Yes | QDialogButtonBox.No)
+        button_box.accepted.connect(dialog.accept)
+        button_box.rejected.connect(dialog.reject)
+        yes_button = button_box.button(QDialogButtonBox.Yes)
+        if yes_button is not None:
+            yes_button.setDefault(True)
+        layout.addWidget(button_box)
+        return dialog
+
+    def _confirm_regroup_assignments(self, assignments: dict[str, str]) -> bool:
+        dialog = self._create_regroup_confirmation_dialog(assignments)
+        if dialog is None:
+            return False
+        return dialog.exec() == QDialog.Accepted
 
     def populate_inspector(self, dataset) -> None:
         self._populating_inspector = True
