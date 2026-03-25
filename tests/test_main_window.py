@@ -10,7 +10,7 @@ from grasp.branding import APP_AUTHOR, APP_TAGLINE, APP_WINDOW_TITLE
 from grasp.intelligence.providers import OpenAIClassificationProvider
 from grasp.intelligence.service import IntelligenceService
 from grasp.models import DatasetRecord, DatasetUnderstanding, SourceCandidate
-from grasp.qt_compat import QApplication, QAbstractItemView, QDialog, QLabel, QMessageBox, QPlainTextEdit, Qt
+from grasp.qt_compat import QApplication, QAbstractItemView, QDialog, QGridLayout, QLabel, QMessageBox, QPlainTextEdit, Qt
 from grasp.ui.main_window import MAP_HTTP_USER_AGENT, MainWindow
 
 
@@ -173,6 +173,7 @@ class MainWindowTests(unittest.TestCase):
                 self.assertEqual(window.run_ai_sources_button.text(), "Find info (AI)")
                 self.assertEqual(window.find_sources_button.text(), "Find sources")
                 self.assertEqual(window.regroup_button.text(), "AI Regroup...")
+                self.assertEqual(window.reset_groups_button.text(), "Reset Groups")
                 self.assertEqual(window.generate_styles_button.text(), "Generate Styles")
                 self.assertEqual(window.transfer_ai_selected_button.text(), "Transfer AI to Name + Description")
                 self.assertEqual(window.save_dataset_button.text(), "Save Changes")
@@ -199,6 +200,7 @@ class MainWindowTests(unittest.TestCase):
                 self.assertTrue(window.grouping_group_box.isAncestorOf(window.new_group_button))
                 self.assertTrue(window.grouping_group_box.isAncestorOf(window.apply_group_button))
                 self.assertTrue(window.grouping_group_box.isAncestorOf(window.regroup_button))
+                self.assertTrue(window.grouping_group_box.isAncestorOf(window.reset_groups_button))
                 self.assertTrue(window.grouping_group_box.isAncestorOf(window.grouping_scope_combo))
                 self.assertTrue(window.dataset_actions_group_box.isAncestorOf(window.fill_ai_fields_button))
                 self.assertTrue(window.dataset_actions_group_box.isAncestorOf(window.make_visible_button))
@@ -248,6 +250,37 @@ class MainWindowTests(unittest.TestCase):
                 self.assertIn("checkmark_indeterminate.svg", window.styleSheet())
                 self.assertIn("QPushButton#CornerExitButton", window.styleSheet())
                 self.assertIn("max-height: 24px;", window.styleSheet())
+            finally:
+                window.close()
+
+    def test_review_action_boxes_use_left_to_right_grid_layouts(self) -> None:
+        with patch("grasp.ui.main_window.WEBENGINE_AVAILABLE", False):
+            window = MainWindow()
+            try:
+                selection_layout = window.selection_group_box.layout()
+                grouping_layout = window.grouping_group_box.layout()
+                dataset_actions_layout = window.dataset_actions_group_box.layout()
+
+                self.assertIsInstance(selection_layout, QGridLayout)
+                self.assertIsInstance(grouping_layout, QGridLayout)
+                self.assertIsInstance(dataset_actions_layout, QGridLayout)
+
+                self.assertEqual(selection_layout.getItemPosition(selection_layout.indexOf(window.show_all_button))[:2], (0, 0))
+                self.assertEqual(selection_layout.getItemPosition(selection_layout.indexOf(window.hide_all_button))[:2], (0, 1))
+                self.assertEqual(selection_layout.getItemPosition(selection_layout.indexOf(window.show_group_button))[:2], (1, 0))
+                self.assertEqual(selection_layout.getItemPosition(selection_layout.indexOf(window.hide_group_button))[:2], (1, 1))
+
+                self.assertEqual(grouping_layout.getItemPosition(grouping_layout.indexOf(window.new_group_button))[:2], (0, 0))
+                self.assertEqual(grouping_layout.getItemPosition(grouping_layout.indexOf(window.apply_group_button))[:2], (0, 1))
+                self.assertEqual(grouping_layout.getItemPosition(grouping_layout.indexOf(window.regroup_button))[:2], (1, 0))
+                self.assertEqual(grouping_layout.getItemPosition(grouping_layout.indexOf(window.reset_groups_button))[:2], (1, 1))
+                self.assertEqual(grouping_layout.getItemPosition(grouping_layout.indexOf(window.grouping_scope_combo))[:2], (2, 1))
+
+                self.assertEqual(dataset_actions_layout.getItemPosition(dataset_actions_layout.indexOf(window.fill_ai_fields_button))[:2], (0, 0))
+                self.assertEqual(dataset_actions_layout.getItemPosition(dataset_actions_layout.indexOf(window.make_visible_button))[:2], (0, 1))
+                self.assertEqual(dataset_actions_layout.getItemPosition(dataset_actions_layout.indexOf(window.hide_from_maps_button))[:2], (1, 0))
+                self.assertEqual(dataset_actions_layout.getItemPosition(dataset_actions_layout.indexOf(window.include_in_report_button))[:2], (1, 1))
+                self.assertEqual(dataset_actions_layout.getItemPosition(dataset_actions_layout.indexOf(window.exclude_from_report_button))[:2], (2, 0))
             finally:
                 window.close()
 
@@ -1966,6 +1999,34 @@ class MainWindowTests(unittest.TestCase):
             finally:
                 window.close()
 
+    def test_complete_regroup_preview_replaces_existing_groups_and_refreshes_tree(self) -> None:
+        with patch("grasp.ui.main_window.WEBENGINE_AVAILABLE", False):
+            window = MainWindow()
+            try:
+                with tempfile.TemporaryDirectory() as tmp:
+                    window._set_workspace(tmp)
+                    window.repository.create_group("Legacy Group")
+                    window.repository.replace_datasets(
+                        [
+                            DatasetRecord(dataset_id="a", source_path="D:/data/a.geojson", source_format="geojson", group_id="legacy-group", cache_path="a.parquet"),
+                            DatasetRecord(dataset_id="b", source_path="D:/data/b.geojson", source_format="geojson", group_id="legacy-group", cache_path="b.parquet"),
+                        ]
+                    )
+                    window.refresh_all_views()
+                    token = window._begin_background_activity("Regrouping checked datasets...", activity="AI Regroup")
+                    window._review_job_running = True
+
+                    with patch.object(window, "_confirm_regroup_assignments", return_value=True):
+                        window._complete_regroup_preview(token, {"assignments": {"a": "Administrative", "b": "Protected Area"}})
+
+                    self.assertNotIn(("legacy-group", "Legacy Group"), window.repository.list_groups())
+                    top_level_groups = [window.tree.topLevelItem(index).text(0) for index in range(window.tree.topLevelItemCount())]
+                    self.assertIn("Administrative", top_level_groups)
+                    self.assertIn("Protected Area", top_level_groups)
+                    self.assertNotIn("Legacy Group", top_level_groups)
+            finally:
+                window.close()
+
     def test_complete_regroup_preview_keeps_groups_unchanged_when_cancelled(self) -> None:
         with patch("grasp.ui.main_window.WEBENGINE_AVAILABLE", False):
             window = MainWindow()
@@ -1987,6 +2048,44 @@ class MainWindowTests(unittest.TestCase):
                     self.assertEqual(window.repository.get_dataset("a").group_id, "transport")
                     self.assertEqual(window.repository.get_dataset("b").group_id, "ungrouped")
                     self.assertFalse(window._review_job_running)
+            finally:
+                window.close()
+
+    def test_reset_groups_for_scope_moves_checked_datasets_to_ungrouped_and_prunes_empty_groups(self) -> None:
+        with patch("grasp.ui.main_window.WEBENGINE_AVAILABLE", False):
+            window = MainWindow()
+            try:
+                with tempfile.TemporaryDirectory() as tmp:
+                    window._set_workspace(tmp)
+                    window.repository.create_group("Legacy Group")
+                    window.repository.create_group("Keep Group")
+                    window.repository.replace_datasets(
+                        [
+                            DatasetRecord(dataset_id="a", source_path="D:/data/a.geojson", source_format="geojson", group_id="legacy-group", cache_path="a.parquet"),
+                            DatasetRecord(dataset_id="b", source_path="D:/data/b.geojson", source_format="geojson", group_id="legacy-group", cache_path="b.parquet"),
+                            DatasetRecord(dataset_id="c", source_path="D:/data/c.geojson", source_format="geojson", group_id="keep-group", cache_path="c.parquet"),
+                        ]
+                    )
+                    window.refresh_all_views()
+                    legacy_group = next(
+                        window.tree.topLevelItem(index)
+                        for index in range(window.tree.topLevelItemCount())
+                        if window.tree.topLevelItem(index).text(0) == "Legacy Group"
+                    )
+                    legacy_group.child(0).setCheckState(0, Qt.Checked)
+                    legacy_group.child(1).setCheckState(0, Qt.Checked)
+
+                    with patch("grasp.ui.main_window.QMessageBox.question", return_value=QMessageBox.Yes):
+                        window.reset_groups_for_scope()
+
+                    self.assertEqual(window.repository.get_dataset("a").group_id, "ungrouped")
+                    self.assertEqual(window.repository.get_dataset("b").group_id, "ungrouped")
+                    self.assertEqual(window.repository.get_dataset("c").group_id, "keep-group")
+                    self.assertNotIn(("legacy-group", "Legacy Group"), window.repository.list_groups())
+                    top_level_groups = [window.tree.topLevelItem(index).text(0) for index in range(window.tree.topLevelItemCount())]
+                    self.assertIn("Ungrouped", top_level_groups)
+                    self.assertIn("Keep Group", top_level_groups)
+                    self.assertNotIn("Legacy Group", top_level_groups)
             finally:
                 window.close()
 

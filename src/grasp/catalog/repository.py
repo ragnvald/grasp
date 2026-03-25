@@ -640,6 +640,19 @@ class CatalogRepository:
             )
             conn.commit()
 
+    def reset_groups(self, dataset_ids: list[str]) -> int:
+        if not dataset_ids:
+            return 0
+        placeholders = ", ".join("?" for _ in dataset_ids)
+        with closing(self._connect()) as conn:
+            cursor = conn.execute(
+                f"UPDATE datasets SET group_id = 'ungrouped', updated_at = ? WHERE dataset_id IN ({placeholders})",
+                (_utc_now(), *dataset_ids),
+            )
+            conn.commit()
+        self.prune_empty_groups()
+        return int(cursor.rowcount or 0)
+
     def assign_groups_bulk(self, assignments: dict[str, str]) -> int:
         normalized_assignments: list[tuple[str, str, str]] = []
         for dataset_id, group_name in assignments.items():

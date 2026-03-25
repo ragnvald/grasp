@@ -5,6 +5,7 @@ import hashlib
 from pathlib import Path
 import re
 import shutil
+import sys
 
 
 SUPPORTED_SUFFIXES = {".shp", ".gpkg", ".geojson", ".json", ".parquet"}
@@ -89,12 +90,12 @@ def ensure_workspace(root_path: str | Path) -> ProjectWorkspace:
 
 def catalog_exists(root_path: str | Path) -> bool:
     root = Path(root_path).expanduser().resolve()
-    return (root / PRIMARY_WORKSPACE_DIRNAME / "catalog.sqlite").exists()
+    return (_prepare_workspace_root(root) / "catalog.sqlite").exists()
 
 
 def iter_supported_files(root_path: str | Path) -> list[Path]:
     root = Path(root_path).expanduser().resolve()
-    excluded_roots = [(root / name).resolve() for name in WORKSPACE_DIRNAMES]
+    excluded_roots = _excluded_workspace_roots(root)
     matches: list[Path] = []
     for path in root.rglob("*"):
         if not path.is_file():
@@ -107,7 +108,32 @@ def iter_supported_files(root_path: str | Path) -> list[Path]:
 
 
 def _prepare_workspace_root(root: Path) -> Path:
+    if _is_frozen_runtime():
+        return _portable_workspace_base() / _portable_project_dirname(root)
     return root / PRIMARY_WORKSPACE_DIRNAME
+
+
+def _excluded_workspace_roots(root: Path) -> list[Path]:
+    workspace = _prepare_workspace_root(root).resolve()
+    if _is_relative_to(workspace, root):
+        return [workspace]
+    return []
+
+
+def _portable_workspace_base() -> Path:
+    return Path(sys.executable).resolve().parent / PRIMARY_WORKSPACE_DIRNAME
+
+
+def _portable_project_dirname(root: Path) -> str:
+    readable_name = re.sub(r"[^A-Za-z0-9._-]+", "-", root.name or "project").strip("-._")
+    if not readable_name:
+        readable_name = "project"
+    digest = hashlib.sha1(root.as_posix().encode("utf-8")).hexdigest()[:12]
+    return f"{readable_name}-{digest}"
+
+
+def _is_frozen_runtime() -> bool:
+    return bool(getattr(sys, "frozen", False))
 
 
 def _is_relative_to(path: Path, other: Path) -> bool:

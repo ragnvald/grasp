@@ -39,6 +39,7 @@ from grasp.qt_compat import (
     QDialogButtonBox,
     QFileDialog,
     QFormLayout,
+    QGridLayout,
     QGroupBox,
     QHBoxLayout,
     QHeaderView,
@@ -424,68 +425,76 @@ class MainWindow(QMainWindow):
         actions_layout.addWidget(self.review_visibility_note)
 
         self.selection_group_box = QGroupBox("Selection")
-        selection_layout = QHBoxLayout(self.selection_group_box)
+        selection_layout = QGridLayout(self.selection_group_box)
         self.show_all_button = QPushButton("Select All")
         self.show_all_button.clicked.connect(lambda: self.set_all_checked(True))
-        selection_layout.addWidget(self.show_all_button)
+        selection_layout.addWidget(self.show_all_button, 0, 0)
 
         self.hide_all_button = QPushButton("Clear All")
         self.hide_all_button.clicked.connect(lambda: self.set_all_checked(False))
-        selection_layout.addWidget(self.hide_all_button)
+        selection_layout.addWidget(self.hide_all_button, 0, 1)
 
         self.show_group_button = QPushButton("Select Group")
         self.show_group_button.clicked.connect(lambda: self.set_selected_group_checked(True))
-        selection_layout.addWidget(self.show_group_button)
+        selection_layout.addWidget(self.show_group_button, 1, 0)
 
         self.hide_group_button = QPushButton("Clear Group")
         self.hide_group_button.clicked.connect(lambda: self.set_selected_group_checked(False))
-        selection_layout.addWidget(self.hide_group_button)
-        selection_layout.addStretch(1)
+        selection_layout.addWidget(self.hide_group_button, 1, 1)
+        selection_layout.setColumnStretch(0, 1)
+        selection_layout.setColumnStretch(1, 1)
         actions_layout.addWidget(self.selection_group_box)
 
         self.grouping_group_box = QGroupBox("Grouping")
-        grouping_layout = QHBoxLayout(self.grouping_group_box)
+        grouping_layout = QGridLayout(self.grouping_group_box)
         self.new_group_button = QPushButton("New Group")
         self.new_group_button.clicked.connect(self.create_group)
-        grouping_layout.addWidget(self.new_group_button)
+        grouping_layout.addWidget(self.new_group_button, 0, 0)
 
         self.apply_group_button = QPushButton("Apply Suggested Group")
         self.apply_group_button.clicked.connect(self.apply_suggested_group)
-        grouping_layout.addWidget(self.apply_group_button)
+        grouping_layout.addWidget(self.apply_group_button, 0, 1)
 
         self.regroup_button = QPushButton("AI Regroup...")
         self.regroup_button.clicked.connect(self.start_regroup_for_scope)
-        grouping_layout.addWidget(self.regroup_button)
+        grouping_layout.addWidget(self.regroup_button, 1, 0)
 
-        grouping_layout.addWidget(QLabel("Scope"))
+        self.reset_groups_button = QPushButton("Reset Groups")
+        self.reset_groups_button.clicked.connect(self.reset_groups_for_scope)
+        grouping_layout.addWidget(self.reset_groups_button, 1, 1)
+
+        grouping_layout.addWidget(QLabel("Scope"), 2, 0)
         self.grouping_scope_combo = QComboBox()
         self.grouping_scope_combo.addItem("Checked datasets", "checked")
         self.grouping_scope_combo.addItem("All datasets", "all")
-        grouping_layout.addWidget(self.grouping_scope_combo)
-        grouping_layout.addStretch(1)
+        grouping_layout.addWidget(self.grouping_scope_combo, 2, 1)
+        grouping_layout.setColumnStretch(0, 1)
+        grouping_layout.setColumnStretch(1, 1)
         actions_layout.addWidget(self.grouping_group_box)
 
         self.dataset_actions_group_box = QGroupBox("Selection actions")
-        dataset_actions_layout = QVBoxLayout(self.dataset_actions_group_box)
+        dataset_actions_layout = QGridLayout(self.dataset_actions_group_box)
         self.fill_ai_fields_button = QPushButton("Fill Empty Fields from AI")
         self.fill_ai_fields_button.clicked.connect(self.fill_checked_user_fields_from_ai)
-        dataset_actions_layout.addWidget(self.fill_ai_fields_button)
+        dataset_actions_layout.addWidget(self.fill_ai_fields_button, 0, 0)
 
         self.make_visible_button = QPushButton("Make visible in maps")
         self.make_visible_button.clicked.connect(self.make_checked_visible_in_maps)
-        dataset_actions_layout.addWidget(self.make_visible_button)
+        dataset_actions_layout.addWidget(self.make_visible_button, 0, 1)
 
         self.hide_from_maps_button = QPushButton("Hide from maps")
         self.hide_from_maps_button.clicked.connect(self.hide_checked_from_maps)
-        dataset_actions_layout.addWidget(self.hide_from_maps_button)
+        dataset_actions_layout.addWidget(self.hide_from_maps_button, 1, 0)
 
         self.include_in_report_button = QPushButton("Include in export")
         self.include_in_report_button.clicked.connect(self.include_checked_in_report)
-        dataset_actions_layout.addWidget(self.include_in_report_button)
+        dataset_actions_layout.addWidget(self.include_in_report_button, 1, 1)
 
         self.exclude_from_report_button = QPushButton("Exclude from export")
         self.exclude_from_report_button.clicked.connect(self.exclude_checked_from_report)
-        dataset_actions_layout.addWidget(self.exclude_from_report_button)
+        dataset_actions_layout.addWidget(self.exclude_from_report_button, 2, 0, 1, 2)
+        dataset_actions_layout.setColumnStretch(0, 1)
+        dataset_actions_layout.setColumnStretch(1, 1)
         actions_layout.addWidget(self.dataset_actions_group_box)
         actions_layout.addStretch(1)
 
@@ -1125,6 +1134,36 @@ class MainWindow(QMainWindow):
     def start_regroup_all(self) -> None:
         self.grouping_scope_combo.setCurrentIndex(self.grouping_scope_combo.findData("all"))
         self.start_regroup_for_scope()
+
+    def reset_groups_for_scope(self) -> None:
+        if not self._ensure_review_job_can_start():
+            return
+        if self.repository is None:
+            QMessageBox.information(self, "No project", "Load or scan a folder first.")
+            return
+        scope = self._grouping_scope()
+        dataset_ids = self._dataset_ids_for_scope(scope)
+        if not dataset_ids:
+            QMessageBox.information(self, "Choose datasets", "Check one or more datasets or switch scope to All datasets first.")
+            return
+        scope_label = "checked datasets" if scope == "checked" else "all datasets"
+        answer = QMessageBox.question(
+            self,
+            "Reset groups",
+            f"Move {len(dataset_ids)} {scope_label} back to Ungrouped?\n\n"
+            "Any groups left empty afterward will be removed.",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if answer != QMessageBox.Yes:
+            return
+        changed = self.repository.reset_groups(dataset_ids)
+        self.append_activity_log(
+            f"Reset groups for {changed} dataset(s) in {scope_label}. Any empty groups were removed.",
+            activity="Grouping",
+        )
+        self.refresh_all_views()
+        self.statusBar().showMessage(f"Reset groups for {changed} dataset(s).", 5000)
 
     def start_style_for_scope(self) -> None:
         if self.repository is None:

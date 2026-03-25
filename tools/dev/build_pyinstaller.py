@@ -1,5 +1,6 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
+import argparse
 import subprocess
 import sys
 from pathlib import Path
@@ -16,7 +17,8 @@ GEOSTACK_PACKAGES = (
 )
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
+    args = _parse_args(argv)
     root = Path(__file__).resolve().parents[2]
     src_dir = root / "src"
     entry = src_dir / "grasp" / "app.py"
@@ -64,7 +66,24 @@ def main() -> int:
         cmd.extend(["--exclude-module", excluded_module])
 
     cmd.append(str(entry))
-    return subprocess.call(cmd, cwd=root)
+    exit_code = subprocess.call(cmd, cwd=root)
+    if exit_code == 0 and args.portable_win11:
+        _prepare_portable_layout(dist_dir / APP_NAME)
+    return exit_code
+
+
+def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Build the GRASP desktop app with PyInstaller.")
+    parser.add_argument(
+        "--portable-win11",
+        action="store_true",
+        help="Prepare a portable Windows onedir layout with a sibling data_out folder.",
+    )
+    return parser.parse_args(argv)
+
+
+def _prepare_portable_layout(app_dir: Path) -> None:
+    (app_dir / "data_out").mkdir(parents=True, exist_ok=True)
 
 
 def _qt_hidden_imports() -> list[str]:
@@ -94,4 +113,3 @@ def _qt_excluded_modules() -> list[str]:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

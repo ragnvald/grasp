@@ -13,6 +13,7 @@ class StyleService:
     PALETTES = {
         "administrative": ("#2f6690", "#8fb3cc"),
         "hydrology": ("#2a6f97", "#79b4d8"),
+        "risk": ("#b02a37", "#f5b7b1"),
         "transport": ("#b85c38", "#f0b27a"),
         "protected-area": ("#4d7c0f", "#a8c686"),
         "habitat": ("#588157", "#b7d3a8"),
@@ -23,7 +24,58 @@ class StyleService:
     }
     THEME_HINTS = {
         "administrative": {"admin", "administrativo", "district", "distrito", "province", "boundary", "capital"},
-        "hydrology": {"water", "river", "lake", "hydro", "shore", "coast", "costeiro", "costeira", "costeiros"},
+        "hydrology": {
+            "water",
+            "river",
+            "rivers",
+            "rio",
+            "rios",
+            "lake",
+            "lakes",
+            "hydro",
+            "shore",
+            "coast",
+            "costeiro",
+            "costeira",
+            "costeiros",
+            "agua",
+            "aguas",
+            "água",
+            "águas",
+            "ribeira",
+            "ribeiras",
+            "arroyo",
+            "arroyos",
+            "canal",
+            "canais",
+            "drenagem",
+        },
+        "risk": {
+            "risk",
+            "risco",
+            "hazard",
+            "fire",
+            "wildfire",
+            "incendio",
+            "incêndio",
+            "incandio",
+            "queimada",
+            "queimadas",
+            "flood",
+            "flooding",
+            "inundacao",
+            "inundação",
+            "cyclone",
+            "ciclone",
+            "drought",
+            "seca",
+            "erosion",
+            "erosao",
+            "erosão",
+            "seismic",
+            "sismica",
+            "sísmica",
+        },
         "transport": {"road", "street", "route", "transport", "rail", "track", "bridge", "linha"},
         "protected-area": {"protected", "park", "parque", "reserve", "reserva", "conservacao", "conservation"},
         "habitat": {"habitat", "ecology", "forest", "wetland", "mangrove", "species"},
@@ -127,9 +179,10 @@ class StyleService:
         self,
         *,
         project_name: str,
-        gpkg_path: Path,
+        data_source: str,
         layer_specs: list[dict[str, str]],
         bounds: list[float],
+        provider_key: str = "ogr",
     ) -> str:
         project = ET.Element(
             "qgis",
@@ -143,9 +196,12 @@ class StyleService:
 
         layer_tree = ET.SubElement(project, "layer-tree-group", {"name": project_name, "checked": "Qt::Checked"})
         project_layers = ET.SubElement(project, "projectlayers")
-        relative_path = gpkg_path.name
         for spec in layer_specs:
-            datasource = f"{relative_path}|layername={spec['layer_name']}"
+            layer_name = spec.get("layer_name", "")
+            datasource = data_source
+            if layer_name:
+                datasource = f"{data_source}|layername={layer_name}"
+            subset_string = spec.get("subset_string", "")
             layer_id = spec["dataset_id"]
             ET.SubElement(
                 layer_tree,
@@ -154,7 +210,7 @@ class StyleService:
                     "id": layer_id,
                     "name": spec["display_name"],
                     "source": datasource,
-                    "providerKey": "ogr",
+                    "providerKey": provider_key,
                     "checked": "Qt::Checked",
                 },
             )
@@ -162,13 +218,25 @@ class StyleService:
             ET.SubElement(maplayer, "id").text = layer_id
             ET.SubElement(maplayer, "layername").text = spec["display_name"]
             ET.SubElement(maplayer, "datasource").text = datasource
-            ET.SubElement(maplayer, "provider").text = "ogr"
+            ET.SubElement(maplayer, "provider").text = provider_key
             ET.SubElement(maplayer, "shortname").text = spec["display_name"]
             ET.SubElement(maplayer, "title").text = spec["display_name"]
             ET.SubElement(maplayer, "abstract").text = spec.get("description", "")
+            if subset_string:
+                ET.SubElement(maplayer, "subsetString").text = subset_string
             custom = ET.SubElement(maplayer, "customproperties")
             ET.SubElement(custom, "property", {"key": "grasp/style_summary", "value": spec.get("style_summary", "")})
             ET.SubElement(custom, "property", {"key": "grasp/style_theme", "value": spec.get("style_theme", "")})
+            style_qml = spec.get("style_qml", "")
+            if style_qml:
+                try:
+                    style_root = ET.fromstring(style_qml)
+                except ET.ParseError:
+                    style_root = None
+                if style_root is not None:
+                    renderer = style_root.find("renderer-v2")
+                    if renderer is not None:
+                        maplayer.append(renderer)
 
         canvas = ET.SubElement(project, "mapcanvas")
         extent = ET.SubElement(canvas, "extent")

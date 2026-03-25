@@ -63,6 +63,32 @@ class HeuristicClassificationProvider(ClassificationProvider):
     THEMES = {
         "transport": {"road", "rail", "street", "transport", "route", "line"},
         "hydrology": {"water", "river", "lake", "stream", "coast", "coastal", "costeiro", "costeiros", "ocean"},
+        "risk": {
+            "risk",
+            "risco",
+            "hazard",
+            "fire",
+            "wildfire",
+            "incendio",
+            "incêndio",
+            "incandio",
+            "queimada",
+            "queimadas",
+            "flood",
+            "flooding",
+            "inundacao",
+            "inundação",
+            "cyclone",
+            "ciclone",
+            "drought",
+            "seca",
+            "erosion",
+            "erosao",
+            "erosão",
+            "seismic",
+            "sismica",
+            "sísmica",
+        },
         "administrative": {
             "admin",
             "administrative",
@@ -138,6 +164,30 @@ class HeuristicClassificationProvider(ClassificationProvider):
         "patrimonio",
         "roads",
         "road",
+        "risk",
+        "risco",
+        "hazard",
+        "fire",
+        "wildfire",
+        "incendio",
+        "incêndio",
+        "incandio",
+        "queimada",
+        "queimadas",
+        "flood",
+        "flooding",
+        "inundacao",
+        "inundação",
+        "cyclone",
+        "ciclone",
+        "drought",
+        "seca",
+        "erosion",
+        "erosao",
+        "erosão",
+        "seismic",
+        "sismica",
+        "sísmica",
         "water",
         "river",
         "lake",
@@ -252,39 +302,49 @@ class HeuristicClassificationProvider(ClassificationProvider):
             return {}
         target = max(1, min(int(target_group_count or 1), len(datasets)))
         profiles = [self._group_profile(dataset) for dataset in datasets]
-        label_scores: dict[str, int] = {}
-        for profile in profiles:
-            for index, label in enumerate(profile["labels"]):
-                label_scores[label] = label_scores.get(label, 0) + max(1, 4 - index)
+        return self._assign_profiles_to_labels(profiles, target)
 
-        base_labels: list[str] = []
-        for label, _score in sorted(label_scores.items(), key=lambda item: (-item[1], item[0])):
-            if label not in base_labels:
-                base_labels.append(label)
-            if len(base_labels) >= target:
-                break
-
-        if len(base_labels) < target:
-            for profile in profiles:
-                for label in profile["labels"]:
-                    if label in base_labels:
-                        continue
-                    base_labels.append(label)
-                    if len(base_labels) >= target:
-                        break
-                if len(base_labels) >= target:
-                    break
-
-        assignments: dict[str, str] = {}
-        for profile in profiles:
-            chosen_label = next((label for label in profile["labels"] if label in base_labels), "")
-            if not chosen_label:
-                chosen_label = max(
-                    base_labels,
-                    key=lambda label: self._group_similarity(profile["tokens"], _tokenize(label)),
-                )
-            assignments[profile["dataset"].dataset_id] = chosen_label
-        return assignments
+    def assignments_look_too_broad(
+        self,
+        datasets: list[DatasetRecord],
+        assignments: dict[str, str],
+        target_group_count: int,
+    ) -> bool:
+        if not datasets or not assignments:
+            return False
+        target = max(1, min(int(target_group_count or 1), len(datasets)))
+        profiles = [self._group_profile(dataset) for dataset in datasets]
+        profile_by_id = {profile["dataset"].dataset_id: profile for profile in profiles}
+        grouped: dict[str, list[str]] = {}
+        for dataset in datasets:
+            group_name = str(assignments.get(dataset.dataset_id) or "").strip()
+            if not group_name:
+                continue
+            grouped.setdefault(group_name, []).append(dataset.dataset_id)
+        if not grouped:
+            return False
+        average_group_size = max(1, (len(datasets) + target - 1) // target)
+        if len(datasets) >= max(8, target * 2) and len(grouped) < max(2, target // 2):
+            return True
+        for dataset_ids in grouped.values():
+            group_size = len(dataset_ids)
+            if group_size > max(18, average_group_size * 3):
+                return True
+            if group_size < max(6, average_group_size * 2):
+                continue
+            theme_counts: dict[str, int] = {}
+            for dataset_id in dataset_ids:
+                theme = str(profile_by_id.get(dataset_id, {}).get("theme") or "")
+                if not theme or theme == GENERIC_THEME:
+                    continue
+                theme_counts[theme] = theme_counts.get(theme, 0) + 1
+            if len(theme_counts) >= 3:
+                return True
+            if theme_counts:
+                dominant_share = max(theme_counts.values()) / max(1, group_size)
+                if dominant_share < 0.7:
+                    return True
+        return False
 
     def _theme_for_tokens(self, tokens: set[str]) -> str:
         best_theme = GENERIC_THEME
@@ -403,6 +463,20 @@ class HeuristicClassificationProvider(ClassificationProvider):
             if any(token in token_set for token in {"coast", "coastal", "costeiro", "costeiros"}):
                 base = f"coastal {base}"
             return base
+        if theme == "risk":
+            if any(token in token_set for token in {"fire", "wildfire", "incendio", "incêndio", "incandio", "queimada", "queimadas"}):
+                return "fire risk or wildfire hazard areas"
+            if any(token in token_set for token in {"flood", "flooding", "inundacao", "inundação"}):
+                return "flood risk or inundation zones"
+            if any(token in token_set for token in {"cyclone", "ciclone"}):
+                return "cyclone or storm risk areas"
+            if any(token in token_set for token in {"drought", "seca"}):
+                return "drought risk areas"
+            if any(token in token_set for token in {"erosion", "erosao", "erosão"}):
+                return "erosion risk areas"
+            if any(token in token_set for token in {"seismic", "sismica", "sísmica"}):
+                return "seismic hazard areas"
+            return "risk or hazard zones"
         if theme == "protected-area":
             if any(token in token_set for token in {"park", "parque"}) and any(token in token_set for token in {"national", "nacional"}):
                 return "national park boundaries or management zones"
@@ -480,27 +554,29 @@ class HeuristicClassificationProvider(ClassificationProvider):
             " ".join(
                 [
                     title,
-                    dataset.description_ai,
-                    dataset.suggested_group,
+                    dataset.preferred_description,
                     dataset.geometry_type,
                     Path(dataset.source_path).stem,
                 ]
             )
         )
-        theme = dataset.suggested_group if dataset.suggested_group and dataset.suggested_group != "ungrouped" else self._theme_for_tokens(tokens)
+        theme = self._theme_for_tokens(tokens)
         labels: list[str] = []
-        if dataset.suggested_group and dataset.suggested_group != "ungrouped":
-            labels.append(_title_case(dataset.suggested_group))
         if theme != GENERIC_THEME:
             labels.append(_title_case(theme))
         name_label = self._name_based_group_label(title)
         if name_label:
             labels.append(name_label)
+        if dataset.suggested_group and dataset.suggested_group != "ungrouped":
+            suggested_label = _title_case(dataset.suggested_group)
+            if theme == GENERIC_THEME or self._group_similarity(tokens, _tokenize(suggested_label))[0] > 0:
+                labels.append(suggested_label)
         if not labels:
             labels.append("Ungrouped")
         return {
             "dataset": dataset,
             "tokens": tokens,
+            "theme": theme,
             "labels": self._dedupe(labels, limit=4),
         }
 
@@ -514,6 +590,96 @@ class HeuristicClassificationProvider(ClassificationProvider):
         overlap = len(dataset_tokens.intersection(label_tokens))
         exact_theme_bonus = 1 if overlap and len(label_tokens) == 1 else 0
         return (overlap + exact_theme_bonus, -len(label_tokens))
+
+    def _assign_profiles_to_labels(
+        self,
+        profiles: list[dict[str, object]],
+        target_group_count: int,
+        *,
+        blocked_labels: set[str] | None = None,
+    ) -> dict[str, str]:
+        if not profiles:
+            return {}
+        target = max(1, min(int(target_group_count or 1), len(profiles)))
+        base_labels = self._select_base_labels(profiles, target, blocked_labels=blocked_labels)
+        if not base_labels:
+            base_labels = ["Ungrouped"]
+        average_group_size = max(1, (len(profiles) + target - 1) // target)
+        group_sizes = {label: 0 for label in base_labels}
+        assignments: dict[str, str] = {}
+        ordered_profiles = sorted(
+            profiles,
+            key=lambda profile: (
+                str(profile.get("theme") or "") == GENERIC_THEME,
+                -len(profile.get("tokens") or set()),
+                str(profile["dataset"].preferred_name).lower(),
+            ),
+        )
+        for profile in ordered_profiles:
+            profile_labels = self._candidate_labels(profile, blocked_labels=blocked_labels)
+            label_positions = {label: index for index, label in enumerate(profile_labels)}
+            best_label = base_labels[0]
+            best_score: tuple[float, int, int, int, str] | None = None
+            theme_label = _title_case(str(profile.get("theme") or ""))
+            for label in base_labels:
+                similarity, token_penalty = self._group_similarity(profile["tokens"], _tokenize(label))
+                direct_bonus = max(0, 8 - (label_positions[label] * 3)) if label in label_positions else 0
+                theme_bonus = 4 if theme_label and label.lower() == theme_label.lower() else 0
+                size_penalty = int((group_sizes.get(label, 0) / average_group_size) * 4)
+                score = (float(direct_bonus + theme_bonus + (similarity * 4) - size_penalty), direct_bonus, similarity, -group_sizes.get(label, 0), label)
+                if best_score is None or score > best_score:
+                    best_score = score
+                    best_label = label
+            assignments[profile["dataset"].dataset_id] = best_label
+            group_sizes[best_label] = group_sizes.get(best_label, 0) + 1
+        return assignments
+
+    def _select_base_labels(
+        self,
+        profiles: list[dict[str, object]],
+        target_group_count: int,
+        *,
+        blocked_labels: set[str] | None = None,
+    ) -> list[str]:
+        blocked = {str(label).strip().lower() for label in (blocked_labels or set()) if str(label).strip()}
+        target = max(1, min(int(target_group_count or 1), len(profiles)))
+        primary_scores: dict[str, int] = {}
+        secondary_scores: dict[str, int] = {}
+        all_scores: dict[str, int] = {}
+        for profile in profiles:
+            labels = self._candidate_labels(profile, blocked_labels=blocked)
+            for index, label in enumerate(labels):
+                all_scores[label] = all_scores.get(label, 0) + max(1, 4 - index)
+                if index == 0:
+                    primary_scores[label] = primary_scores.get(label, 0) + 3
+                else:
+                    secondary_scores[label] = secondary_scores.get(label, 0) + max(1, 3 - index)
+        if not all_scores and blocked:
+            return self._select_base_labels(profiles, target, blocked_labels=None)
+        selected: list[str] = []
+        primary_quota = target if target <= 2 else max(1, (target + 1) // 2)
+        for score_map, quota in ((primary_scores, primary_quota), (secondary_scores, target)):
+            for label, _score in sorted(score_map.items(), key=lambda item: (-item[1], item[0])):
+                if label in selected:
+                    continue
+                selected.append(label)
+                if len(selected) >= quota:
+                    break
+            if len(selected) >= target:
+                return selected[:target]
+        for label, _score in sorted(all_scores.items(), key=lambda item: (-item[1], item[0])):
+            if label in selected:
+                continue
+            selected.append(label)
+            if len(selected) >= target:
+                break
+        return selected[:target]
+
+    def _candidate_labels(self, profile: dict[str, object], *, blocked_labels: set[str] | None = None) -> list[str]:
+        blocked = {str(label).strip().lower() for label in (blocked_labels or set()) if str(label).strip()}
+        labels = [str(label).strip() for label in profile.get("labels", []) if str(label).strip()]
+        filtered = [label for label in labels if label.lower() not in blocked]
+        return filtered or labels or ["Ungrouped"]
 
 
 class OpenAIClassificationProvider(ClassificationProvider, CandidateRanker):
@@ -580,6 +746,8 @@ class OpenAIClassificationProvider(ClassificationProvider, CandidateRanker):
             "Prioritize file name, layer name, column names, and sample values when those are present. "
             "Descriptions must be specific and useful, not vague. "
             "Translate or interpret clues such as 'Parque Nacional', 'Distritos Costeiros', or other non-English names when relevant. "
+            "Risk or hazard layers such as wildfire risk, flood risk, cyclone risk, drought risk, erosion risk, or seismic risk are not protected areas. "
+            "For example, 'Risco de incandio e queimadas extremo' should map to a risk or fire-hazard group, not to protected area. "
             "Make cautious but helpful assumptions from the naming when the evidence is incomplete. "
             "Avoid generic phrases such as 'general geographic'. "
             "Return JSON with keys: theme, keywords, place_names, suggested_title, "
@@ -703,6 +871,10 @@ class OpenAIClassificationProvider(ClassificationProvider, CandidateRanker):
         fallback = fallback_grouper(datasets, target_group_count, timeout_s=timeout_s) if callable(fallback_grouper) else {}
         if not self._can_use_remote() or len(datasets) <= 1:
             return fallback
+        heuristic_profiles = {
+            dataset.dataset_id: self.fallback.classify(dataset)
+            for dataset in datasets
+        }
         payload = {
             "target_group_count": max(1, min(int(target_group_count or 1), len(datasets))),
             "datasets": [
@@ -712,6 +884,9 @@ class OpenAIClassificationProvider(ClassificationProvider, CandidateRanker):
                     "ai_title": dataset.display_name_ai,
                     "description": dataset.preferred_description,
                     "suggested_group": dataset.suggested_group,
+                    "local_theme_hint": heuristic_profiles[dataset.dataset_id].theme,
+                    "local_group_hint": heuristic_profiles[dataset.dataset_id].suggested_group,
+                    "local_keywords": heuristic_profiles[dataset.dataset_id].keywords[:4],
                     "geometry_type": dataset.geometry_type,
                     "source_stem": Path(dataset.source_path).stem,
                 }
@@ -721,6 +896,14 @@ class OpenAIClassificationProvider(ClassificationProvider, CandidateRanker):
         system_prompt = (
             "Group GIS datasets into a rational set of catalog groups. "
             "Use the requested target_group_count as the intended number of groups. "
+            "Translate or interpret non-English titles, descriptions, and group hints when needed before deciding groups. "
+            "If datasets use different languages, normalize them by meaning first and group by subject matter, not by shared language. "
+            "Treat any existing suggested_group as a hint, not a hard constraint, and override it when the dataset meaning points elsewhere. "
+            "Risk or hazard layers such as wildfire risk, flood risk, cyclone risk, drought risk, erosion risk, or seismic risk must not be grouped under Protected Area. "
+            "For example, 'Risco de incandio e queimadas extremo' belongs with risk or fire-hazard datasets, not with protected areas. "
+            "Avoid catch-all or overly broad groups. "
+            "A proposed group should usually stay within roughly three times the average target group size unless every dataset in it is clearly the same subject. "
+            "If a tentative group looks mixed or too large, split it into more coherent subgroups. "
             "Prefer short, human-readable group names. "
             "Return JSON with key groups, where each group has name and dataset_ids."
         )
@@ -747,6 +930,9 @@ class OpenAIClassificationProvider(ClassificationProvider, CandidateRanker):
         for dataset in datasets:
             if dataset.dataset_id not in assignments and dataset.dataset_id in fallback:
                 assignments[dataset.dataset_id] = fallback[dataset.dataset_id]
+        repair_helper = self.fallback if isinstance(self.fallback, HeuristicClassificationProvider) else HeuristicClassificationProvider()
+        if repair_helper.assignments_look_too_broad(datasets, assignments, target_group_count):
+            return repair_helper.group_datasets(datasets, target_group_count, timeout_s=timeout_s)
         return assignments
 
     def rank(

@@ -3,8 +3,11 @@
 from contextlib import closing
 import gc
 import json
+import os
 from pathlib import Path
 import sqlite3
+import zipfile
+from xml.etree import ElementTree as ET
 
 import geopandas as gpd
 import pandas as pd
@@ -16,6 +19,8 @@ from grasp.ingest.service import IngestService
 from grasp.models import DatasetRecord, LayerStyle
 from grasp.styling import StyleService, merge_bounds
 from grasp.workspace import ProjectWorkspace, sanitize_layer_name
+
+QGIS_TEMPLATE_QGZ_PATH = Path(__file__).resolve().parents[3] / "data" / "qgis" / "template.qgz"
 
 
 class ExportService:
@@ -42,6 +47,7 @@ class ExportService:
             geometry_column = str(gdf.geometry.name)
             gdf.to_file(target, layer=layer_name, driver="GPKG")
             style = self._style_for_dataset(dataset, group_name=group_lookup.get(dataset.group_id, dataset.group_id))
+            style_qml = self.style_service.qgis_style_qml(dataset, style)
             layer_specs.append(
                 {
                     "dataset_id": dataset.dataset_id,
@@ -53,15 +59,17 @@ class ExportService:
                     "geometry_column": geometry_column,
                     "group_name": group_lookup.get(dataset.group_id, dataset.group_id),
                     "style": style,
+                    "style_qml": style_qml,
                 }
             )
             if dataset.bbox_wgs84:
                 all_bounds.append(dataset.bbox_wgs84)
             del gdf
             gc.collect()
+        project_dir = self._project_output_dir(target)
         project_xml = self.style_service.qgis_project_xml(
             project_name=target.stem,
-            gpkg_path=target,
+            data_source=self._relative_project_data_source(project_dir, target),
             layer_specs=[
                 {
                     "dataset_id": str(spec["dataset_id"]),
@@ -71,13 +79,20 @@ class ExportService:
                     "geometry_type": _geometry_type_for_qgis(str(spec["geometry_type"])),
                     "style_summary": cast_style(spec["style"]).summary,
                     "style_theme": cast_style(spec["style"]).theme,
+                    "style_qml": str(spec.get("style_qml", "")),
                 }
                 for spec in layer_specs
             ],
             bounds=merge_bounds(all_bounds),
         )
+        project_xml = self._project_xml_from_template(
+            gpkg_path=target,
+            project_dir=project_dir,
+            project_name=target.stem,
+            generated_project_xml=project_xml,
+        )
         self._write_metadata_tables(target, datasets, layer_specs, project_xml)
-        target.with_suffix(".qgs").write_text(project_xml, encoding="utf-8")
+        self._write_qgis_project_files(target, project_xml)
         gc.collect()
         return target
 
@@ -88,6 +103,8 @@ class ExportService:
         selected_sources = {dataset.dataset_id: self._selected_source(dataset.dataset_id) for dataset in datasets}
         group_lookup = dict(self.repository.list_groups())
         writer: pq.ParquetWriter | None = None
+        layer_specs: list[dict[str, str]] = []
+        all_bounds: list[list[float]] = []
         for dataset in datasets:
             gdf = self._load_cache(dataset)
             if gdf.empty:
@@ -119,6 +136,23 @@ class ExportService:
             out = out[keep_columns]
             if out.geometry.name != "geometry":
                 out = out.rename_geometry("geometry")
+            style = self._style_for_dataset(dataset, group_name=group_lookup.get(dataset.group_id, dataset.group_id))
+            style_qml = self.style_service.qgis_style_qml(dataset, style)
+            layer_specs.append(
+                {
+                    "dataset_id": dataset.dataset_id,
+                    "display_name": dataset.preferred_name,
+                    "description": dataset.preferred_description,
+                    "layer_name": "",
+                    "geometry_type": _geometry_type_for_qgis(dataset.geometry_type),
+                    "style_summary": style.summary,
+                    "style_theme": style.theme,
+                    "style_qml": style_qml,
+                    "subset_string": self._dataset_subset_string(dataset.dataset_id),
+                }
+            )
+            if dataset.bbox_wgs84:
+                all_bounds.append(dataset.bbox_wgs84)
             table = _geopandas_to_arrow(out, index=False)
             if writer is None:
                 writer = pq.ParquetWriter(target, table.schema)
@@ -143,6 +177,20 @@ class ExportService:
                 geometry="geometry",
                 crs="EPSG:4326",
             ).to_parquet(target, index=False)
+        project_dir = self._project_output_dir(target)
+        project_xml = self.style_service.qgis_project_xml(
+            project_name=target.stem,
+            data_source=self._relative_project_data_source(project_dir, target),
+            layer_specs=layer_specs,
+            bounds=merge_bounds(all_bounds),
+        )
+        project_xml = self._project_xml_from_template(
+            gpkg_path=target,
+            project_dir=project_dir,
+            project_name=target.stem,
+            generated_project_xml=project_xml,
+        )
+        self._write_qgis_project_files(target, project_xml)
         return target
 
     def _write_metadata_tables(
@@ -277,6 +325,108 @@ class ExportService:
             if source.is_selected:
                 return source
         return sources[0] if sources else None
+
+    def _write_qgis_project_files(self, gpkg_path: Path, project_xml: str) -> None:
+        qgs_path, qgz_path = self._project_output_paths(gpkg_path)
+        qgs_path.parent.mkdir(parents=True, exist_ok=True)
+        qgs_path.write_text(project_xml, encoding="utf-8")
+        with zipfile.ZipFile(qgz_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+            copied_template_content = False
+            if QGIS_TEMPLATE_QGZ_PATH.exists():
+                with zipfile.ZipFile(QGIS_TEMPLATE_QGZ_PATH) as template_archive:
+                    for info in template_archive.infolist():
+                        if info.filename.lower().endswith(".qgs"):
+                            archive.writestr(qgs_path.name, project_xml)
+                        else:
+                            archive.writestr(info, template_archive.read(info.filename))
+                    copied_template_content = True
+            if not copied_template_content:
+                archive.writestr(qgs_path.name, project_xml)
+
+    def _project_xml_from_template(
+        self,
+        *,
+        gpkg_path: Path,
+        project_dir: Path,
+        project_name: str,
+        generated_project_xml: str,
+    ) -> str:
+        if not QGIS_TEMPLATE_QGZ_PATH.exists():
+            return generated_project_xml
+        try:
+            with zipfile.ZipFile(QGIS_TEMPLATE_QGZ_PATH) as archive:
+                template_qgs_name = next(
+                    name for name in archive.namelist() if name.lower().endswith(".qgs")
+                )
+                template_root = ET.fromstring(archive.read(template_qgs_name))
+        except Exception:
+            return generated_project_xml
+
+        generated_root = ET.fromstring(generated_project_xml)
+        template_root.set("projectname", project_name)
+        title = template_root.find("title")
+        if title is None:
+            title = ET.SubElement(template_root, "title")
+        title.text = project_name
+
+        template_layer_tree = template_root.find("layer-tree-group")
+        generated_layer_tree = generated_root.find("layer-tree-group")
+        if template_layer_tree is not None and generated_layer_tree is not None:
+            custom_order = template_layer_tree.find("custom-order")
+            for layer_node in generated_layer_tree.findall("layer-tree-layer"):
+                template_layer_tree.append(layer_node)
+                if custom_order is not None:
+                    ET.SubElement(custom_order, "item").text = layer_node.get("id", "")
+
+        template_project_layers = template_root.find("projectlayers")
+        generated_project_layers = generated_root.find("projectlayers")
+        if template_project_layers is None and generated_project_layers is not None:
+            template_project_layers = ET.SubElement(template_root, "projectlayers")
+        if template_project_layers is not None and generated_project_layers is not None:
+            for maplayer_node in generated_project_layers.findall("maplayer"):
+                template_project_layers.append(maplayer_node)
+
+        relative_path = self._relative_project_data_source(project_dir, gpkg_path)
+        generated_layer_ids = {
+            layer_node.get("id", "")
+            for layer_node in generated_layer_tree.findall("layer-tree-layer")
+        } if generated_layer_tree is not None else set()
+        for maplayer in template_root.findall(".//projectlayers/maplayer"):
+            layer_id = (maplayer.findtext("id") or "").strip()
+            if layer_id not in generated_layer_ids:
+                continue
+            datasource = maplayer.find("datasource")
+            if datasource is None:
+                continue
+            value = (datasource.text or "").strip()
+            if "|layername=" in value:
+                layer_suffix = value.split("|layername=", 1)[1]
+                datasource.text = f"{relative_path}|layername={layer_suffix}"
+            else:
+                datasource.text = relative_path
+
+        return ET.tostring(template_root, encoding="unicode")
+
+    def _project_output_dir(self, export_path: Path) -> Path:
+        if QGIS_TEMPLATE_QGZ_PATH.exists():
+            return QGIS_TEMPLATE_QGZ_PATH.parent
+        return export_path.parent
+
+    def _project_output_paths(self, export_path: Path) -> tuple[Path, Path]:
+        project_dir = self._project_output_dir(export_path)
+        suffix_label = export_path.suffix.lstrip(".").lower() or "project"
+        base_name = f"{export_path.stem}_{suffix_label}"
+        return project_dir / f"{base_name}.qgs", project_dir / f"{base_name}.qgz"
+
+    def _relative_project_data_source(self, project_dir: Path, export_path: Path) -> str:
+        try:
+            return Path(os.path.relpath(export_path, start=project_dir)).as_posix()
+        except ValueError:
+            return export_path.resolve().as_posix()
+
+    def _dataset_subset_string(self, dataset_id: str) -> str:
+        escaped_dataset_id = dataset_id.replace("'", "''")
+        return f"\"dataset_id\" = '{escaped_dataset_id}'"
 
     def _style_for_dataset(self, dataset: DatasetRecord, *, group_name: str) -> LayerStyle:
         stored = self.repository.get_style(dataset.dataset_id)

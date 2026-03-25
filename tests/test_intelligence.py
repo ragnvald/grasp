@@ -42,11 +42,13 @@ class _CapturingSession:
     def __init__(self, payload: dict) -> None:
         self.calls = 0
         self.last_timeout = None
+        self.last_json = None
         self.payload = payload
 
     def post(self, *_args, **kwargs):
         self.calls += 1
         self.last_timeout = kwargs.get("timeout")
+        self.last_json = kwargs.get("json")
         return _CapturingResponse(self.payload)
 
 
@@ -137,6 +139,25 @@ class IntelligenceTests(unittest.TestCase):
         self.assertEqual(understanding.theme, "administrative")
         self.assertIn("coastal administrative districts", understanding.suggested_description.lower())
         self.assertNotIn("general geographic", understanding.suggested_description.lower())
+
+    def test_fire_risk_dataset_classifies_as_risk_not_protected_area(self) -> None:
+        dataset = DatasetRecord(
+            dataset_id="fire-risk",
+            source_path="D:/data/risco_incandio_queimadas_extremo.geojson",
+            source_format="geojson",
+            layer_name="Risco de incandio e queimadas extremo",
+            geometry_type="Polygon",
+            feature_count=12,
+            column_profile_json=json.dumps({"columns": [], "column_count": 0}),
+        )
+        provider = HeuristicClassificationProvider()
+
+        understanding = provider.classify(dataset)
+
+        self.assertEqual(understanding.theme, "risk")
+        self.assertEqual(understanding.suggested_group, "risk")
+        self.assertIn("fire risk", understanding.suggested_description.lower())
+        self.assertNotEqual(understanding.suggested_group, "protected-area")
 
     def test_source_enrichment_sharpens_description_from_search_candidates(self) -> None:
         dataset = DatasetRecord(
@@ -259,6 +280,51 @@ class IntelligenceTests(unittest.TestCase):
 
         self.assertEqual(len(assignments), 4)
         self.assertEqual(len(set(assignments.values())), 2)
+
+    def test_heuristic_grouping_does_not_anchor_fire_risk_to_stale_protected_area_hint(self) -> None:
+        provider = HeuristicClassificationProvider()
+
+        assignments = provider.group_datasets(
+            [
+                DatasetRecord(
+                    dataset_id="a",
+                    source_path="D:/data/risco_incandio_queimadas_extremo.geojson",
+                    source_format="geojson",
+                    layer_name="Risco de incandio e queimadas extremo",
+                    suggested_group="protected-area",
+                ),
+                DatasetRecord(
+                    dataset_id="b",
+                    source_path="D:/data/parque_nacional.geojson",
+                    source_format="geojson",
+                    layer_name="Parque Nacional",
+                    suggested_group="protected-area",
+                ),
+            ],
+            2,
+        )
+
+        self.assertEqual(assignments["a"], "Risk")
+        self.assertEqual(assignments["b"], "Protected Area")
+
+    def test_heuristic_grouping_flags_overbroad_mixed_groupings(self) -> None:
+        provider = HeuristicClassificationProvider()
+        datasets = [
+            DatasetRecord(dataset_id="a", source_path="D:/data/fire.geojson", source_format="geojson", layer_name="Risco de incandio e queimadas extremo"),
+            DatasetRecord(dataset_id="b", source_path="D:/data/flood.geojson", source_format="geojson", layer_name="Risco de inundacao muito alto"),
+            DatasetRecord(dataset_id="c", source_path="D:/data/park.geojson", source_format="geojson", layer_name="Parque Nacional"),
+            DatasetRecord(dataset_id="d", source_path="D:/data/reserve.geojson", source_format="geojson", layer_name="Reserva Especial"),
+            DatasetRecord(dataset_id="e", source_path="D:/data/admin.geojson", source_format="geojson", layer_name="Distritos Administrativos"),
+            DatasetRecord(dataset_id="f", source_path="D:/data/roads.geojson", source_format="geojson", layer_name="Rede Viaria"),
+        ]
+
+        too_broad = provider.assignments_look_too_broad(
+            datasets,
+            {dataset.dataset_id: "Protected Area" for dataset in datasets},
+            3,
+        )
+
+        self.assertTrue(too_broad)
 
     def test_openai_provider_disables_remote_after_repeated_failures(self) -> None:
         dataset = DatasetRecord(
@@ -391,6 +457,151 @@ class IntelligenceTests(unittest.TestCase):
         self.assertEqual(assignments, {"a": "Administrative", "b": "Administrative"})
         self.assertEqual(session.calls, 1)
         self.assertEqual(session.last_timeout, 7.5)
+
+    def test_openai_group_datasets_prompt_mentions_language_normalization(self) -> None:
+        session = _CapturingSession(
+            {
+                "choices": [
+                    {
+                        "message": {
+                            "content": json.dumps(
+                                {
+                                    "groups": [
+                                        {"name": "Risk", "dataset_ids": ["a"]},
+                                    ]
+                                }
+                            )
+                        }
+                    }
+                ]
+            }
+        )
+        provider = OpenAIClassificationProvider(
+            api_key="test-key",
+            fallback=HeuristicClassificationProvider(),
+            session=session,
+        )
+
+        provider.group_datasets(
+            [
+                DatasetRecord(
+                    dataset_id="a",
+                    source_path="D:/data/a.geojson",
+                    source_format="geojson",
+                    layer_name="Risco de incandio e queimadas muito alto",
+                    suggested_group="protected-area",
+                ),
+                DatasetRecord(
+                    dataset_id="b",
+                    source_path="D:/data/b.geojson",
+                    source_format="geojson",
+                    layer_name="Distritos Administrativos",
+                    suggested_group="administrative",
+                ),
+            ],
+            1,
+        )
+
+        self.assertIsNotNone(session.last_json)
+        messages = session.last_json["messages"]
+        system_prompt = messages[0]["content"]
+        self.assertIn("Translate or interpret non-English titles", system_prompt)
+        self.assertIn("group by subject matter, not by shared language", system_prompt)
+        self.assertIn("suggested_group as a hint, not a hard constraint", system_prompt)
+        self.assertIn("must not be grouped under Protected Area", system_prompt)
+        self.assertIn("Risco de incandio e queimadas extremo", system_prompt)
+
+    def test_openai_group_datasets_payload_includes_local_semantic_hints(self) -> None:
+        session = _CapturingSession(
+            {
+                "choices": [
+                    {
+                        "message": {
+                            "content": json.dumps(
+                                {
+                                    "groups": [
+                                        {"name": "Risk", "dataset_ids": ["a"]},
+                                        {"name": "Protected Area", "dataset_ids": ["b"]},
+                                    ]
+                                }
+                            )
+                        }
+                    }
+                ]
+            }
+        )
+        provider = OpenAIClassificationProvider(
+            api_key="test-key",
+            fallback=HeuristicClassificationProvider(),
+            session=session,
+        )
+
+        provider.group_datasets(
+            [
+                DatasetRecord(
+                    dataset_id="a",
+                    source_path="D:/data/risco_incandio_queimadas_extremo.geojson",
+                    source_format="geojson",
+                    layer_name="Risco de incandio e queimadas extremo",
+                ),
+                DatasetRecord(
+                    dataset_id="b",
+                    source_path="D:/data/parque_nacional.geojson",
+                    source_format="geojson",
+                    layer_name="Parque Nacional",
+                ),
+            ],
+            2,
+        )
+
+        self.assertIsNotNone(session.last_json)
+        payload = json.loads(session.last_json["messages"][1]["content"])
+        datasets_by_id = {item["dataset_id"]: item for item in payload["datasets"]}
+        self.assertEqual(datasets_by_id["a"]["local_theme_hint"], "risk")
+        self.assertEqual(datasets_by_id["a"]["local_group_hint"], "risk")
+        self.assertIn("queimadas", datasets_by_id["a"]["local_keywords"])
+        self.assertEqual(datasets_by_id["b"]["local_group_hint"], "protected-area")
+
+    def test_openai_group_datasets_replaces_overbroad_single_group_with_heuristic_grouping(self) -> None:
+        session = _CapturingSession(
+            {
+                "choices": [
+                    {
+                        "message": {
+                            "content": json.dumps(
+                                {
+                                    "groups": [
+                                        {"name": "Protected Area", "dataset_ids": ["a", "b", "c", "d", "e", "f"]},
+                                    ]
+                                }
+                            )
+                        }
+                    }
+                ]
+            }
+        )
+        provider = OpenAIClassificationProvider(
+            api_key="test-key",
+            fallback=HeuristicClassificationProvider(),
+            session=session,
+        )
+
+        assignments = provider.group_datasets(
+            [
+                DatasetRecord(dataset_id="a", source_path="D:/data/fire.geojson", source_format="geojson", layer_name="Risco de incandio e queimadas extremo"),
+                DatasetRecord(dataset_id="b", source_path="D:/data/flood.geojson", source_format="geojson", layer_name="Risco de inundacao muito alto"),
+                DatasetRecord(dataset_id="c", source_path="D:/data/park.geojson", source_format="geojson", layer_name="Parque Nacional"),
+                DatasetRecord(dataset_id="d", source_path="D:/data/reserve.geojson", source_format="geojson", layer_name="Reserva Especial"),
+                DatasetRecord(dataset_id="e", source_path="D:/data/admin.geojson", source_format="geojson", layer_name="Distritos Administrativos"),
+                DatasetRecord(dataset_id="f", source_path="D:/data/roads.geojson", source_format="geojson", layer_name="Rede Viaria"),
+            ],
+            3,
+        )
+
+        self.assertGreater(len(set(assignments.values())), 1)
+        self.assertEqual(assignments["a"], "Risk")
+        self.assertIn(assignments["e"], {"Administrative", "Distritos Administrativos"})
+        self.assertNotEqual(assignments["a"], "Protected Area")
 
     def test_openai_initial_classification_payload_is_token_light_by_default(self) -> None:
         dataset = DatasetRecord(

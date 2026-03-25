@@ -256,6 +256,28 @@ class CatalogRepositoryTests(unittest.TestCase):
             self.assertEqual(repo.get_dataset("b").group_id, "protected-area")
             self.assertNotIn(("old-group", "Old Group"), repo.list_groups())
 
+    def test_reset_groups_moves_datasets_to_ungrouped_and_prunes_empty_groups(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = CatalogRepository(Path(tmp) / "catalog.sqlite")
+            repo.create_group("Old Group")
+            repo.create_group("Keep Group")
+            repo.replace_datasets(
+                [
+                    DatasetRecord(dataset_id="a", source_path="a", source_format="geojson", group_id="old-group", cache_path="a.parquet"),
+                    DatasetRecord(dataset_id="b", source_path="b", source_format="geojson", group_id="old-group", cache_path="b.parquet"),
+                    DatasetRecord(dataset_id="c", source_path="c", source_format="geojson", group_id="keep-group", cache_path="c.parquet"),
+                ]
+            )
+
+            changed = repo.reset_groups(["a", "b"])
+
+            self.assertEqual(changed, 2)
+            self.assertEqual(repo.get_dataset("a").group_id, "ungrouped")
+            self.assertEqual(repo.get_dataset("b").group_id, "ungrouped")
+            self.assertEqual(repo.get_dataset("c").group_id, "keep-group")
+            self.assertNotIn(("old-group", "Old Group"), repo.list_groups())
+            self.assertIn(("keep-group", "Keep Group"), repo.list_groups())
+
     def test_upsert_understandings_bulk_updates_ai_fields_and_auto_assigns_group(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo = CatalogRepository(Path(tmp) / "catalog.sqlite")
