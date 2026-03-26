@@ -99,6 +99,7 @@ APP_ICON_PATH = UI_ASSETS_DIR / "grasp_app_icon.svg"
 # These labels reflect the current archive-oriented wording requested for the import flow.
 LOAD_ARCHIVE_LABEL = "Load data from folder"
 REBUILD_ARCHIVE_LABEL = "Rebuild archive"
+TAB_PAGE_MARGIN_PX = 6
 
 
 class DatasetTreeWidget(QTreeWidget):
@@ -224,6 +225,9 @@ class MainWindow(QMainWindow):
 
         self.tabs = QTabWidget()
         self.tabs.setObjectName("MainTabs")
+        self.tabs.setUsesScrollButtons(True)
+        self.tabs.setElideMode(Qt.ElideRight)
+        self.tabs.tabBar().setExpanding(False)
         self.tabs.currentChanged.connect(self.on_tab_changed)
         central_layout.addWidget(self.tabs, 1)
         self.setCentralWidget(central_host)
@@ -246,8 +250,8 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self.import_tab, "Import")
         self.tabs.addTab(self.datasets_overview_tab, "Datasets overview")
         self.tabs.addTab(self.review_datasets_tab, "Review datasets")
-        self.tabs.addTab(self.info_sources_tab, "Info sources")
-        self.tabs.addTab(self.map_tab, "Map / Export")
+        self.tabs.addTab(self.info_sources_tab, "Manage data")
+        self.tabs.addTab(self.map_tab, "Map")
         self.tabs.addTab(self.settings_tab, "Settings")
         self.tabs.addTab(self.about_tab, "About")
 
@@ -296,31 +300,40 @@ class MainWindow(QMainWindow):
 
     def _build_import_tab(self) -> None:
         layout = QVBoxLayout(self.import_tab)
+        layout.setContentsMargins(TAB_PAGE_MARGIN_PX, TAB_PAGE_MARGIN_PX, TAB_PAGE_MARGIN_PX, TAB_PAGE_MARGIN_PX)
+        layout.setSpacing(8)
 
-        row = QHBoxLayout()
+        controls_layout = QGridLayout()
+        controls_layout.setContentsMargins(0, 0, 0, 0)
+        controls_layout.setHorizontalSpacing(8)
+        controls_layout.setVerticalSpacing(6)
+
         self.folder_edit = QLineEdit()
         self.folder_edit.setPlaceholderText("Choose an input folder with GIS vector data")
         if self.current_settings.last_folder:
             self.folder_edit.setText(self.current_settings.last_folder)
         self.folder_edit.textChanged.connect(self.on_folder_changed)
-        row.addWidget(self.folder_edit, 1)
+        controls_layout.addWidget(self.folder_edit, 0, 0, 1, 3)
 
         self.browse_button = QPushButton("Browse")
         self.browse_button.clicked.connect(self.browse_folder)
-        row.addWidget(self.browse_button)
+        controls_layout.addWidget(self.browse_button, 0, 3)
 
         self.scan_button = QPushButton(REBUILD_ARCHIVE_LABEL)
         self.scan_button.clicked.connect(self.start_scan)
-        row.addWidget(self.scan_button)
+        controls_layout.addWidget(self.scan_button, 1, 0)
 
         self.load_existing_button = QPushButton(LOAD_ARCHIVE_LABEL)
         self.load_existing_button.clicked.connect(self.load_existing_catalog)
-        row.addWidget(self.load_existing_button)
+        controls_layout.addWidget(self.load_existing_button, 1, 1)
 
         self.reset_data_button = QPushButton("Reset All Data")
         self.reset_data_button.clicked.connect(self.reset_all_data)
-        row.addWidget(self.reset_data_button)
-        layout.addLayout(row)
+        controls_layout.addWidget(self.reset_data_button, 1, 2, 1, 2)
+        controls_layout.setColumnStretch(0, 1)
+        controls_layout.setColumnStretch(1, 1)
+        controls_layout.setColumnStretch(2, 1)
+        layout.addLayout(controls_layout)
 
         self.simplify_import_names_checkbox = QCheckBox("Simplify long dataset names on import")
         self.simplify_import_names_checkbox.setChecked(False)
@@ -358,8 +371,8 @@ class MainWindow(QMainWindow):
 
     def _build_review_datasets_tab(self) -> None:
         layout = QVBoxLayout(self.review_datasets_tab)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(0)
+        layout.setContentsMargins(TAB_PAGE_MARGIN_PX, TAB_PAGE_MARGIN_PX, TAB_PAGE_MARGIN_PX, TAB_PAGE_MARGIN_PX)
+        layout.setSpacing(8)
 
         self.review_dataset_splitter = QSplitter(Qt.Horizontal)
         self.review_dataset_splitter.setChildrenCollapsible(False)
@@ -418,6 +431,10 @@ class MainWindow(QMainWindow):
         self.dataset_description_edit.setMinimumHeight(72)
         self.dataset_description_edit.setMaximumHeight(96)
         dataset_form.addRow("Description", self.dataset_description_edit)
+
+        self.dataset_group_combo = QComboBox()
+        self.dataset_group_combo.currentIndexChanged.connect(self._on_dataset_group_changed)
+        dataset_form.addRow("Group", self.dataset_group_combo)
 
         self.visibility_checkbox = QCheckBox("Visible on map")
         self.include_export_checkbox = QCheckBox("Include in export")
@@ -507,15 +524,61 @@ class MainWindow(QMainWindow):
 
     def _build_info_sources_tab(self) -> None:
         layout = QVBoxLayout(self.info_sources_tab)
-        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setContentsMargins(TAB_PAGE_MARGIN_PX, TAB_PAGE_MARGIN_PX, TAB_PAGE_MARGIN_PX, TAB_PAGE_MARGIN_PX)
         layout.setSpacing(10)
 
         self.info_sources_intro_label = QLabel(
-            "Use this page for batch enrichment work. First choose what set of datasets to work on, "
-            "then run a discovery step, then regroup or apply bulk changes once the results look right."
+            "Use this page to define one checked working set, then run discovery, grouping, and batch changes on that same set."
         )
         self.info_sources_intro_label.setWordWrap(True)
         layout.addWidget(self.info_sources_intro_label)
+
+        self.selection_group_box = QGroupBox("2. Choose datasets for batch work")
+        selection_layout = QVBoxLayout(self.selection_group_box)
+        selection_layout.setSpacing(8)
+        self.selection_help_label = QLabel(
+            "This checked working set drives steps 1, 3, and 4 below. "
+            "Use the group dropdown when you want the group buttons to target one specific group."
+        )
+        self.selection_help_label.setWordWrap(True)
+        selection_layout.addWidget(self.selection_help_label)
+
+        selection_controls_layout = QHBoxLayout()
+        selection_controls_layout.setContentsMargins(0, 0, 0, 0)
+        selection_controls_layout.setSpacing(8)
+
+        self.selection_group_combo = QComboBox()
+        self.selection_group_combo.setFixedHeight(34)
+        self.selection_group_combo.setMinimumWidth(240)
+        self.selection_group_combo.setMaximumWidth(300)
+        self.selection_group_combo.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        self.selection_group_combo.setStyleSheet("QComboBox { padding-left: 8px; }")
+        self.selection_group_combo.currentIndexChanged.connect(self._on_selection_group_changed)
+
+        self.show_all_button = QPushButton("Select All")
+        self.show_all_button.clicked.connect(lambda: self.set_all_checked(True))
+        selection_controls_layout.addWidget(self.show_all_button)
+
+        self.hide_all_button = QPushButton("Clear All")
+        self.hide_all_button.clicked.connect(lambda: self.set_all_checked(False))
+        selection_controls_layout.addWidget(self.hide_all_button)
+
+        self.show_group_button = QPushButton("Add Group")
+        self.show_group_button.clicked.connect(lambda: self.set_selected_group_checked(True))
+        selection_controls_layout.addWidget(self.show_group_button)
+
+        self.hide_group_button = QPushButton("Clear Group")
+        self.hide_group_button.clicked.connect(lambda: self.set_selected_group_checked(False))
+        selection_controls_layout.addWidget(self.hide_group_button)
+        selection_controls_layout.addStretch(1)
+        selection_controls_layout.addWidget(QLabel("Group"))
+        selection_controls_layout.addWidget(self.selection_group_combo)
+        selection_layout.addLayout(selection_controls_layout)
+
+        self.selection_scope_status_label = QLabel("No project loaded.")
+        self.selection_scope_status_label.setWordWrap(True)
+        selection_layout.addWidget(self.selection_scope_status_label)
+        layout.addWidget(self.selection_group_box)
 
         self.info_sources_splitter = QSplitter(Qt.Horizontal)
         self.info_sources_splitter.setChildrenCollapsible(False)
@@ -529,7 +592,7 @@ class MainWindow(QMainWindow):
         self.review_actions_group_box = QGroupBox("1. Discover info and sources")
         review_actions_box_layout = QVBoxLayout(self.review_actions_group_box)
         self.review_actions_intro_label = QLabel(
-            "Run one of these discovery steps on the chosen scope. Nothing here changes source files; "
+            "Run one of these discovery steps on the checked working set from step 2. Nothing here changes source files; "
             "it updates GRASP's understanding and source suggestions."
         )
         self.review_actions_intro_label.setWordWrap(True)
@@ -546,35 +609,29 @@ class MainWindow(QMainWindow):
 
         self.find_sources_button = QPushButton("Find sources")
         self.find_sources_button.clicked.connect(self.start_sources_for_scope)
-        review_actions_layout.addWidget(self.find_sources_button, 0, 2)
-
-        review_actions_layout.addWidget(QLabel("Run on"), 1, 0)
-        self.review_scope_combo = QComboBox()
-        self.review_scope_combo.addItem("Checked datasets", "checked")
-        self.review_scope_combo.addItem("All datasets", "all")
-        review_actions_layout.addWidget(self.review_scope_combo, 1, 1, 1, 2)
+        review_actions_layout.addWidget(self.find_sources_button, 1, 0, 1, 2)
         review_actions_layout.setColumnStretch(0, 1)
         review_actions_layout.setColumnStretch(1, 1)
-        review_actions_layout.setColumnStretch(2, 1)
         review_actions_box_layout.addLayout(review_actions_layout)
 
         self.review_actions_note = QLabel(
             "Find info (fast): local first-pass, no external AI.\n"
             "Find info (AI): updates AI title, AI description, and AI group suggestion.\n"
-            "Find sources: keeps the current understanding and refreshes likely external sources only."
+            "Find sources: keeps the current understanding and refreshes likely external sources only.\n"
+            "All three actions use the checked working set defined in step 2."
         )
         self.review_actions_note.setWordWrap(True)
         review_actions_box_layout.addWidget(self.review_actions_note)
         discovery_layout.addWidget(self.review_actions_group_box)
 
-        self.review_job_group_box = QGroupBox("Current run and scope")
+        self.review_job_group_box = QGroupBox("Current run")
         review_job_layout = QVBoxLayout(self.review_job_group_box)
         self.review_job_status = QLabel("No dataset processing job running.")
         self.review_job_status.setWordWrap(True)
         review_job_layout.addWidget(self.review_job_status)
 
         self.review_visibility_note = QLabel(
-            "The checked set comes from the checkboxes in Datasets overview. "
+            "The checked working set is shared with the checkboxes in Datasets overview. "
             "Visible on map is controlled separately in Review datasets. On import, the app auto-enables map visibility for up to "
             f"{MAX_AUTO_VISIBLE_DATASETS} smaller layers (max {MAX_AUTO_VISIBLE_FEATURES} features each) "
             "and leaves the rest off to keep the map responsive."
@@ -595,32 +652,6 @@ class MainWindow(QMainWindow):
         batch_layout.setContentsMargins(0, 0, 0, 0)
         batch_layout.setSpacing(8)
 
-        self.selection_group_box = QGroupBox("2. Choose datasets for batch work")
-        selection_layout = QGridLayout(self.selection_group_box)
-        self.show_all_button = QPushButton("Select All")
-        self.show_all_button.clicked.connect(lambda: self.set_all_checked(True))
-        selection_layout.addWidget(self.show_all_button, 0, 0)
-
-        self.hide_all_button = QPushButton("Clear All")
-        self.hide_all_button.clicked.connect(lambda: self.set_all_checked(False))
-        selection_layout.addWidget(self.hide_all_button, 0, 1)
-
-        self.show_group_button = QPushButton("Select Group")
-        self.show_group_button.clicked.connect(lambda: self.set_selected_group_checked(True))
-        selection_layout.addWidget(self.show_group_button, 1, 0)
-
-        self.hide_group_button = QPushButton("Clear Group")
-        self.hide_group_button.clicked.connect(lambda: self.set_selected_group_checked(False))
-        selection_layout.addWidget(self.hide_group_button, 1, 1)
-        selection_layout.setColumnStretch(0, 1)
-        selection_layout.setColumnStretch(1, 1)
-        self.selection_help_label = QLabel(
-            "Use these shortcuts when you want to redefine the checked set quickly before running discovery, regrouping, or batch changes."
-        )
-        self.selection_help_label.setWordWrap(True)
-        selection_layout.addWidget(self.selection_help_label, 2, 0, 1, 2)
-        batch_layout.addWidget(self.selection_group_box)
-
         self.grouping_group_box = QGroupBox("3. Organize checked datasets")
         grouping_layout = QGridLayout(self.grouping_group_box)
         self.new_group_button = QPushButton("New Group")
@@ -638,20 +669,15 @@ class MainWindow(QMainWindow):
         self.reset_groups_button = QPushButton("Reset Groups")
         self.reset_groups_button.clicked.connect(self.reset_groups_for_scope)
         grouping_layout.addWidget(self.reset_groups_button, 1, 1)
-
-        grouping_layout.addWidget(QLabel("Scope"), 2, 0)
-        self.grouping_scope_combo = QComboBox()
-        self.grouping_scope_combo.addItem("Checked datasets", "checked")
-        self.grouping_scope_combo.addItem("All datasets", "all")
-        grouping_layout.addWidget(self.grouping_scope_combo, 2, 1)
         grouping_layout.setColumnStretch(0, 1)
         grouping_layout.setColumnStretch(1, 1)
         self.grouping_help_label = QLabel(
             "Apply Suggested Group uses the current AI group suggestion for each dataset. "
-            "AI Regroup prepares a proposal first so you can review it before anything is applied."
+            "AI Regroup prepares a proposal first so you can review it before anything is applied. "
+            "These actions use the checked working set from step 2."
         )
         self.grouping_help_label.setWordWrap(True)
-        grouping_layout.addWidget(self.grouping_help_label, 3, 0, 1, 2)
+        grouping_layout.addWidget(self.grouping_help_label, 2, 0, 1, 2)
         batch_layout.addWidget(self.grouping_group_box)
 
         self.dataset_actions_group_box = QGroupBox("4. Apply batch changes")
@@ -675,22 +701,57 @@ class MainWindow(QMainWindow):
         self.exclude_from_report_button = QPushButton("Exclude from export")
         self.exclude_from_report_button.clicked.connect(self.exclude_checked_from_report)
         dataset_actions_layout.addWidget(self.exclude_from_report_button, 2, 0, 1, 2)
+
+        self.export_gpkg_button = QPushButton("Export GeoPackage")
+        self.export_gpkg_button.clicked.connect(self.export_gpkg)
+        dataset_actions_layout.addWidget(self.export_gpkg_button, 3, 0, 1, 2)
         dataset_actions_layout.setColumnStretch(0, 1)
         dataset_actions_layout.setColumnStretch(1, 1)
         self.dataset_actions_help_label = QLabel(
-            "These actions affect only the checked datasets. They update GRASP metadata, grouping, and export or map flags; the source files stay untouched."
+            "These actions affect only the checked datasets. They update GRASP metadata, grouping, and export or map flags; "
+            "the source files stay untouched. Export GeoPackage writes the current included dataset set to a packaged output."
         )
         self.dataset_actions_help_label.setWordWrap(True)
-        dataset_actions_layout.addWidget(self.dataset_actions_help_label, 3, 0, 1, 2)
+        dataset_actions_layout.addWidget(self.dataset_actions_help_label, 4, 0, 1, 2)
         batch_layout.addWidget(self.dataset_actions_group_box)
         batch_layout.addStretch(1)
         self.info_sources_splitter.addWidget(batch_host)
         self.info_sources_splitter.setStretchFactor(0, 4)
         self.info_sources_splitter.setStretchFactor(1, 3)
+        self._configure_manage_data_buttons(
+            [
+                self.fast_info_button,
+                self.run_ai_sources_button,
+                self.find_sources_button,
+                self.show_all_button,
+                self.hide_all_button,
+                self.show_group_button,
+                self.hide_group_button,
+                self.new_group_button,
+                self.apply_group_button,
+                self.regroup_button,
+                self.reset_groups_button,
+                self.fill_ai_fields_button,
+                self.make_visible_button,
+                self.hide_from_maps_button,
+                self.include_in_report_button,
+                self.exclude_from_report_button,
+                self.export_gpkg_button,
+            ]
+        )
+        self._configure_compact_manage_data_buttons(
+            [
+                self.show_all_button,
+                self.hide_all_button,
+                self.show_group_button,
+                self.hide_group_button,
+            ]
+        )
+        self._populate_selection_group_combo()
 
     def _build_datasets_overview_tab(self) -> None:
         layout = QVBoxLayout(self.datasets_overview_tab)
-        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setContentsMargins(TAB_PAGE_MARGIN_PX, TAB_PAGE_MARGIN_PX, TAB_PAGE_MARGIN_PX, TAB_PAGE_MARGIN_PX)
         layout.setSpacing(8)
 
         self.datasets_group_box = QGroupBox("Datasets")
@@ -707,7 +768,7 @@ class MainWindow(QMainWindow):
 
         self.datasets_help_note = QLabel(
             "Tip: Drag datasets between groups in the overview below to reorganize them manually. "
-            "Checkboxes here define the batch-selection scope used by Info sources."
+            "Checkboxes here define the batch-selection scope used by Manage data."
         )
         self.datasets_help_note.setWordWrap(True)
         datasets_group_layout.addWidget(self.datasets_help_note)
@@ -715,28 +776,32 @@ class MainWindow(QMainWindow):
 
     def _build_map_tab(self) -> None:
         layout = QVBoxLayout(self.map_tab)
+        layout.setContentsMargins(TAB_PAGE_MARGIN_PX, TAB_PAGE_MARGIN_PX, TAB_PAGE_MARGIN_PX, TAB_PAGE_MARGIN_PX)
+        layout.setSpacing(8)
 
-        row = QHBoxLayout()
+        controls_layout = QGridLayout()
+        controls_layout.setContentsMargins(0, 0, 0, 0)
+        controls_layout.setHorizontalSpacing(8)
+        controls_layout.setVerticalSpacing(6)
+
         refresh_button = QPushButton("Refresh Map")
         refresh_button.clicked.connect(self.refresh_map)
-        row.addWidget(refresh_button)
+        controls_layout.addWidget(refresh_button, 0, 0)
 
         self.generate_styles_button = QPushButton("Generate Styles")
         self.generate_styles_button.clicked.connect(self.start_style_for_scope)
-        row.addWidget(self.generate_styles_button)
+        controls_layout.addWidget(self.generate_styles_button, 0, 1)
 
-        row.addWidget(QLabel("Scope"))
+        controls_layout.addWidget(QLabel("Scope"), 1, 0)
         self.map_scope_combo = QComboBox()
         self.map_scope_combo.addItem("Visible on map", "visible")
         self.map_scope_combo.addItem("Show all", "all")
         self.map_scope_combo.currentIndexChanged.connect(lambda _index: self.refresh_map())
-        row.addWidget(self.map_scope_combo)
+        controls_layout.addWidget(self.map_scope_combo, 1, 1)
 
-        export_gpkg_button = QPushButton("Export GeoPackage")
-        export_gpkg_button.clicked.connect(self.export_gpkg)
-        row.addWidget(export_gpkg_button)
-        row.addStretch(1)
-        layout.addLayout(row)
+        controls_layout.setColumnStretch(0, 1)
+        controls_layout.setColumnStretch(1, 1)
+        layout.addLayout(controls_layout)
 
         self.map_summary = QLabel("No project loaded.")
         self.map_summary.setWordWrap(True)
@@ -759,6 +824,8 @@ class MainWindow(QMainWindow):
 
     def _build_settings_tab(self) -> None:
         layout = QVBoxLayout(self.settings_tab)
+        layout.setContentsMargins(TAB_PAGE_MARGIN_PX, TAB_PAGE_MARGIN_PX, TAB_PAGE_MARGIN_PX, TAB_PAGE_MARGIN_PX)
+        layout.setSpacing(8)
 
         intro = QLabel(
             f"{APP_DISPLAY_NAME} helps you retrieve, analyse, style and package GIS datasets. "
@@ -801,7 +868,7 @@ class MainWindow(QMainWindow):
         self.ai_context_group_box = QGroupBox("AI Classification Context")
         ai_context_layout = QVBoxLayout(self.ai_context_group_box)
         ai_context_intro = QLabel(
-            "Choose which dataset clues are sent to OpenAI during manual AI runs in Info sources. "
+            "Choose which dataset clues are sent to OpenAI during manual AI runs in Manage data. "
             "Keep this lean to reduce token use. Search-based enrichment can add more evidence later."
         )
         ai_context_intro.setWordWrap(True)
@@ -861,6 +928,8 @@ class MainWindow(QMainWindow):
 
     def _build_about_tab(self) -> None:
         layout = QVBoxLayout(self.about_tab)
+        layout.setContentsMargins(TAB_PAGE_MARGIN_PX, TAB_PAGE_MARGIN_PX, TAB_PAGE_MARGIN_PX, TAB_PAGE_MARGIN_PX)
+        layout.setSpacing(8)
 
         self.about_header_label = QLabel(APP_DISPLAY_NAME)
         self.about_header_label.setStyleSheet("font-size: 22px; font-weight: 700; color: #4d4029;")
@@ -1039,7 +1108,7 @@ class MainWindow(QMainWindow):
         dataset_ids = sync_summary["changed_ids"]
         if dataset_ids:
             self.append_activity_log(
-                f"{len(dataset_ids)} new or changed dataset(s) are ready for Find info (fast) in Info sources.",
+                f"{len(dataset_ids)} new or changed dataset(s) are ready for Find info (fast) in Manage data.",
                 activity=REBUILD_ARCHIVE_LABEL,
             )
         else:
@@ -1174,6 +1243,7 @@ class MainWindow(QMainWindow):
         self.import_summary.setText("No folder loaded.")
         self.tree.clear()
         self.populate_inspector(None)
+        self._populate_selection_group_combo()
         self.log_text.setPlainText("")
         self.map_summary.setText("No project loaded.")
         if WEBENGINE_AVAILABLE and hasattr(self.map_view, "setHtml"):
@@ -1189,22 +1259,22 @@ class MainWindow(QMainWindow):
             return
         name, ok = QInputDialog.getText(self, "Create group", "Group name")
         if ok and name.strip():
-            self.repository.create_group(name.strip())
+            new_group_id = self.repository.create_group(name.strip())
             self.refresh_tree()
+            self._populate_selection_group_combo(preferred_group_id=new_group_id)
 
     def start_ai_selected(self) -> None:
-        self.review_scope_combo.setCurrentIndex(self.review_scope_combo.findData("checked"))
-        self.start_ai_for_scope()
+        self.start_ai_for_scope("checked")
 
-    def start_fast_info_for_scope(self) -> None:
+    def start_fast_info_for_scope(self, scope: str = "checked") -> None:
         if not self._ensure_review_job_can_start():
             return
-        dataset_ids = self._dataset_ids_for_scope(self._review_scope())
+        dataset_ids = self._dataset_ids_for_scope(scope)
         if not dataset_ids:
             QMessageBox.information(
                 self,
-                "Choose dataset",
-                "Check one or more datasets or switch scope to All datasets first.",
+                "Choose datasets",
+                "Check one or more datasets in step 2 first. Use Select All there when you want to run against the whole catalog.",
             )
             return
         self.append_activity_log(
@@ -1219,15 +1289,15 @@ class MainWindow(QMainWindow):
             activity_name="Fast Local Classification",
         )
 
-    def start_ai_for_scope(self) -> None:
+    def start_ai_for_scope(self, scope: str = "checked") -> None:
         if not self._ensure_review_job_can_start():
             return
-        dataset_ids = self._dataset_ids_for_scope(self._review_scope())
+        dataset_ids = self._dataset_ids_for_scope(scope)
         if not dataset_ids:
             QMessageBox.information(
                 self,
-                "Choose dataset",
-                "Check one or more datasets or switch scope to All datasets first.",
+                "Choose datasets",
+                "Check one or more datasets in step 2 first. Use Select All there when you want to run against the whole catalog.",
             )
             return
         ai_runtime_note = self._ai_runtime_note(len(dataset_ids))
@@ -1242,22 +1312,20 @@ class MainWindow(QMainWindow):
         )
 
     def start_ai_all(self) -> None:
-        self.review_scope_combo.setCurrentIndex(self.review_scope_combo.findData("all"))
-        self.start_ai_for_scope()
+        self.start_ai_for_scope("all")
 
     def start_sources_selected(self) -> None:
-        self.review_scope_combo.setCurrentIndex(self.review_scope_combo.findData("checked"))
-        self.start_sources_for_scope()
+        self.start_sources_for_scope("checked")
 
-    def start_sources_for_scope(self) -> None:
+    def start_sources_for_scope(self, scope: str = "checked") -> None:
         if not self._ensure_review_job_can_start():
             return
-        dataset_ids = self._dataset_ids_for_scope(self._review_scope())
+        dataset_ids = self._dataset_ids_for_scope(scope)
         if not dataset_ids:
             QMessageBox.information(
                 self,
-                "Choose dataset",
-                "Check one or more datasets or switch scope to All datasets first.",
+                "Choose datasets",
+                "Check one or more datasets in step 2 first. Use Select All there when you want to run against the whole catalog.",
             )
             return
         self._start_worker_with_refresh(
@@ -1269,8 +1337,7 @@ class MainWindow(QMainWindow):
         )
 
     def start_sources_all(self) -> None:
-        self.review_scope_combo.setCurrentIndex(self.review_scope_combo.findData("all"))
-        self.start_sources_for_scope()
+        self.start_sources_for_scope("all")
 
     def apply_suggested_group(self) -> None:
         if self.repository is None:
@@ -1282,16 +1349,18 @@ class MainWindow(QMainWindow):
         self.refresh_all_views()
 
     def start_regroup_checked(self) -> None:
-        self.grouping_scope_combo.setCurrentIndex(self.grouping_scope_combo.findData("checked"))
-        self.start_regroup_for_scope()
+        self.start_regroup_for_scope("checked")
 
-    def start_regroup_for_scope(self) -> None:
+    def start_regroup_for_scope(self, scope: str = "checked") -> None:
         if not self._ensure_review_job_can_start():
             return
-        scope = self._grouping_scope()
         dataset_ids = self._dataset_ids_for_scope(scope)
         if not dataset_ids:
-            QMessageBox.information(self, "Choose datasets", "Check one or more datasets or switch scope to All datasets first.")
+            QMessageBox.information(
+                self,
+                "Choose datasets",
+                "Check one or more datasets in step 2 first. Use Select All there when you want to regroup the whole catalog.",
+            )
             return
         target_group_count = self._prompt_group_count(len(dataset_ids), "checked datasets" if scope == "checked" else "all datasets")
         if target_group_count <= 0:
@@ -1303,19 +1372,21 @@ class MainWindow(QMainWindow):
         )
 
     def start_regroup_all(self) -> None:
-        self.grouping_scope_combo.setCurrentIndex(self.grouping_scope_combo.findData("all"))
-        self.start_regroup_for_scope()
+        self.start_regroup_for_scope("all")
 
-    def reset_groups_for_scope(self) -> None:
+    def reset_groups_for_scope(self, scope: str = "checked") -> None:
         if not self._ensure_review_job_can_start():
             return
         if self.repository is None:
             QMessageBox.information(self, "No project", "Load or scan a folder first.")
             return
-        scope = self._grouping_scope()
         dataset_ids = self._dataset_ids_for_scope(scope)
         if not dataset_ids:
-            QMessageBox.information(self, "Choose datasets", "Check one or more datasets or switch scope to All datasets first.")
+            QMessageBox.information(
+                self,
+                "Choose datasets",
+                "Check one or more datasets in step 2 first. Use Select All there when you want to reset the whole catalog.",
+            )
             return
         scope_label = "checked datasets" if scope == "checked" else "all datasets"
         answer = QMessageBox.question(
@@ -1371,9 +1442,9 @@ class MainWindow(QMainWindow):
     def set_selected_group_checked(self, checked: bool) -> None:
         if self.repository is None:
             return
-        group_id = self.selected_group_id()
+        group_id = self._selected_batch_group_id() or self.selected_group_id()
         if not group_id:
-            QMessageBox.information(self, "Choose group", "Select a group or a dataset within the group first.")
+            QMessageBox.information(self, "Choose group", "Choose a group in step 2 first.")
             return
         dataset_ids = self._dataset_ids_for_group_id(group_id)
         if not dataset_ids:
@@ -1384,6 +1455,9 @@ class MainWindow(QMainWindow):
         else:
             self._checked_dataset_id_set.difference_update(dataset_ids)
         self.refresh_tree()
+
+    def _on_selection_group_changed(self, _index: int) -> None:
+        self._update_manage_data_scope_summary()
 
     def set_all_visibility(self, visibility: bool) -> None:
         self.set_all_checked(visibility)
@@ -1397,6 +1471,7 @@ class MainWindow(QMainWindow):
         dataset_id = self.selected_dataset_id()
         if not dataset_id:
             return
+        stored = self.repository.get_dataset(dataset_id)
         self.repository.save_dataset_user_fields(
             dataset_id,
             display_name_user=self.dataset_name_edit.text().strip(),
@@ -1404,7 +1479,29 @@ class MainWindow(QMainWindow):
             visibility=self.visibility_checkbox.isChecked(),
             include_in_export=self.include_export_checkbox.isChecked(),
         )
+        selected_group_id = self._selected_dataset_group_id_from_inspector()
+        if stored is not None and stored.group_id != selected_group_id:
+            self.repository.assign_group(dataset_id, selected_group_id)
         self.refresh_all_views()
+
+    def _on_dataset_group_changed(self, _index: int) -> None:
+        if self.repository is None or self._populating_inspector:
+            return
+        dataset_id = self.selected_dataset_id()
+        if not dataset_id:
+            return
+        stored = self.repository.get_dataset(dataset_id)
+        if stored is None:
+            return
+        selected_group_id = self._selected_dataset_group_id_from_inspector()
+        if stored.group_id == selected_group_id:
+            return
+        self.repository.assign_group(dataset_id, selected_group_id)
+        self.refresh_all_views()
+        self.statusBar().showMessage(
+            f"Assigned dataset to {display_group_name(selected_group_id)}.",
+            4000,
+        )
 
     def _on_visibility_checkbox_toggled(self, _checked: bool) -> None:
         self._save_selected_dataset_flags()
@@ -1686,6 +1783,7 @@ class MainWindow(QMainWindow):
                 self._checked_dataset_id_set.update(dataset_ids)
             else:
                 self._checked_dataset_id_set.difference_update(dataset_ids)
+            self._update_manage_data_scope_summary()
             return
         dataset_id = item.data(0, Qt.UserRole)
         if not dataset_id:
@@ -1694,6 +1792,7 @@ class MainWindow(QMainWindow):
             self._checked_dataset_id_set.add(str(dataset_id))
         else:
             self._checked_dataset_id_set.discard(str(dataset_id))
+        self._update_manage_data_scope_summary()
 
     def on_tree_order_changed(self) -> None:
         if self.repository is None or self._populating_tree:
@@ -1784,13 +1883,68 @@ class MainWindow(QMainWindow):
         return self._checked_dataset_ids()
 
     def _review_scope(self) -> str:
-        return str(self.review_scope_combo.currentData() or "checked")
+        return "checked"
 
     def _grouping_scope(self) -> str:
-        return str(self.grouping_scope_combo.currentData() or "checked")
+        return "checked"
 
     def _map_scope(self) -> str:
         return str(self.map_scope_combo.currentData() or "visible")
+
+    def _selected_batch_group_id(self) -> str:
+        if not hasattr(self, "selection_group_combo"):
+            return ""
+        return sanitize_group_id(str(self.selection_group_combo.currentData() or ""))
+
+    def _populate_selection_group_combo(self, preferred_group_id: str | None = None) -> None:
+        if not hasattr(self, "selection_group_combo"):
+            return
+        current_group_id = preferred_group_id or self._selected_batch_group_id() or self.selected_group_id() or "ungrouped"
+        has_repository = self.repository is not None
+        self.selection_group_combo.blockSignals(True)
+        try:
+            self.selection_group_combo.clear()
+            if not has_repository:
+                self.selection_group_combo.setEnabled(False)
+            else:
+                groups = self.repository.list_groups()
+                for group_id, group_name in groups:
+                    self.selection_group_combo.addItem(group_name, group_id)
+                target_group_id = sanitize_group_id(current_group_id or "ungrouped")
+                selected_index = self.selection_group_combo.findData(target_group_id)
+                if selected_index < 0 and self.selection_group_combo.count() > 0:
+                    selected_index = 0
+                self.selection_group_combo.setEnabled(self.selection_group_combo.count() > 0)
+                if selected_index >= 0:
+                    self.selection_group_combo.setCurrentIndex(selected_index)
+        finally:
+            self.selection_group_combo.blockSignals(False)
+        self._update_manage_data_scope_summary()
+
+    def _update_manage_data_scope_summary(self) -> None:
+        if not hasattr(self, "selection_scope_status_label"):
+            return
+        if self.repository is None:
+            self.selection_scope_status_label.setText("No project loaded.")
+            return
+        checked_count = len(self._checked_dataset_ids())
+        selected_group_id = self._selected_batch_group_id() or "ungrouped"
+        group_dataset_count = len(self._dataset_ids_for_group_id(selected_group_id))
+        self.selection_scope_status_label.setText(
+            f"Working set: {checked_count} checked dataset(s). "
+            f"Group shortcut target: {display_group_name(selected_group_id)} ({group_dataset_count} dataset(s))."
+        )
+
+    def _configure_manage_data_buttons(self, buttons: list[QPushButton]) -> None:
+        for button in buttons:
+            button.setMinimumHeight(34)
+            button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+
+    def _configure_compact_manage_data_buttons(self, buttons: list[QPushButton]) -> None:
+        for button in buttons:
+            button.setFixedHeight(34)
+            button.setFixedWidth(136)
+            button.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
 
     def _group_check_state(self, dataset_ids: list[str]):
         if not dataset_ids:
@@ -1923,6 +2077,8 @@ class MainWindow(QMainWindow):
             if dataset is None:
                 self.dataset_name_edit.clear()
                 self.dataset_description_edit.clear()
+                self.dataset_group_combo.clear()
+                self.dataset_group_combo.setEnabled(False)
                 self.visibility_checkbox.setChecked(False)
                 self.include_export_checkbox.setChecked(False)
                 self.source_path_label.setText("-")
@@ -1936,6 +2092,8 @@ class MainWindow(QMainWindow):
                 return
             self.dataset_name_edit.setText(dataset.display_name_user)
             self.dataset_description_edit.setPlainText(dataset.description_user)
+            self._populate_dataset_group_combo(dataset.group_id)
+            self.dataset_group_combo.setEnabled(True)
             self.visibility_checkbox.setChecked(dataset.visibility)
             self.include_export_checkbox.setChecked(dataset.include_in_export)
             self.source_path_label.setText(dataset.source_path)
@@ -1948,6 +2106,23 @@ class MainWindow(QMainWindow):
             self.ai_description_box.setPlainText(dataset.description_ai or "")
         finally:
             self._populating_inspector = False
+
+    def _populate_dataset_group_combo(self, current_group_id: str) -> None:
+        self.dataset_group_combo.clear()
+        if self.repository is None:
+            return
+        groups = self.repository.list_groups()
+        normalized_group_id = sanitize_group_id(current_group_id or "ungrouped")
+        if not any(group_id == normalized_group_id for group_id, _group_name in groups):
+            groups.append((normalized_group_id, display_group_name(normalized_group_id)))
+            groups.sort(key=lambda item: item[1].lower())
+        for group_id, group_name in groups:
+            self.dataset_group_combo.addItem(group_name, group_id)
+        selected_index = self.dataset_group_combo.findData(normalized_group_id)
+        self.dataset_group_combo.setCurrentIndex(max(selected_index, 0))
+
+    def _selected_dataset_group_id_from_inspector(self) -> str:
+        return sanitize_group_id(str(self.dataset_group_combo.currentData() or "ungrouped"))
 
     def export_gpkg(self) -> None:
         if self.export_service is None or self.current_workspace is None:
@@ -2016,6 +2191,7 @@ class MainWindow(QMainWindow):
     def refresh_all_views(self) -> None:
         self.refresh_import_table()
         self.refresh_tree()
+        self._populate_selection_group_combo()
         self.refresh_dataset_browser_table()
         self.refresh_map()
 
@@ -2155,7 +2331,7 @@ class MainWindow(QMainWindow):
                     child.setData(0, Qt.UserRole, dataset.dataset_id)
                     child.setFlags(child.flags() | Qt.ItemIsUserCheckable | Qt.ItemIsDragEnabled | Qt.ItemIsSelectable | Qt.ItemIsEnabled)
                     child.setCheckState(0, Qt.Checked if dataset.dataset_id in self._checked_dataset_id_set else Qt.Unchecked)
-                    child.setToolTip(0, "Checked = selected for batch actions in Info sources")
+                    child.setToolTip(0, "Checked = selected for batch actions in Manage data")
                     group_item.addChild(child)
                     group_dataset_ids.append(dataset.dataset_id)
                     if dataset.dataset_id == selected_id:
@@ -2165,6 +2341,7 @@ class MainWindow(QMainWindow):
                 group_item.setExpanded(True)
         finally:
             self._populating_tree = False
+        self._update_manage_data_scope_summary()
 
     def refresh_map(self) -> None:
         datasets = self._datasets()
@@ -2187,7 +2364,7 @@ class MainWindow(QMainWindow):
         if not self._is_map_tab_active():
             self.map_summary.setText(
                 f"Map layers available: {len(map_dataset_ids)} of {len(datasets)} | Checked for batch actions: {checked_count} | Styled: {style_count}. "
-                "Open the Map / Export tab to load the map in browse mode."
+                "Open the Map tab to load the map in browse mode."
             )
             return
         self._ensure_map_ready()
@@ -2357,7 +2534,7 @@ class MainWindow(QMainWindow):
         placeholder.setReadOnly(True)
         if message is None:
             if WEBENGINE_AVAILABLE:
-                message = "Open the Map / Export tab to initialize the embedded map preview."
+                message = "Open the Map tab to initialize the embedded map preview."
             else:
                 message = WEBENGINE_UNAVAILABLE_MESSAGE
         placeholder.setPlainText(message)

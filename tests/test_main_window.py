@@ -10,8 +10,8 @@ from grasp.branding import APP_AUTHOR, APP_LINKEDIN_URL, APP_REPOSITORY_URL, APP
 from grasp.intelligence.providers import OpenAIClassificationProvider
 from grasp.intelligence.service import IntelligenceService
 from grasp.models import DatasetRecord, DatasetUnderstanding, SourceCandidate
-from grasp.qt_compat import QApplication, QAbstractItemView, QDialog, QGridLayout, QLabel, QMessageBox, QPlainTextEdit, Qt
-from grasp.ui.main_window import ABOUT_ILLUSTRATION_PATH, APP_ICON_PATH, MAP_HTTP_USER_AGENT, MainWindow
+from grasp.qt_compat import QApplication, QAbstractItemView, QDialog, QGridLayout, QHBoxLayout, QLabel, QMessageBox, QPlainTextEdit, Qt, QVBoxLayout
+from grasp.ui.main_window import ABOUT_ILLUSTRATION_PATH, APP_ICON_PATH, MAP_HTTP_USER_AGENT, TAB_PAGE_MARGIN_PX, MainWindow
 
 
 class MainWindowTests(unittest.TestCase):
@@ -69,7 +69,7 @@ class MainWindowTests(unittest.TestCase):
 
                     self.assertFalse(window._map_initialized)
                     self.assertTrue(window._map_refresh_pending)
-                    self.assertIn("Open the Map / Export tab", window.map_summary.text())
+                    self.assertIn("Open the Map tab", window.map_summary.text())
 
                     window.tabs.setCurrentWidget(window.map_tab)
 
@@ -151,8 +151,19 @@ class MainWindowTests(unittest.TestCase):
             try:
                 self.assertEqual(
                     [window.tabs.tabText(index) for index in range(window.tabs.count())],
-                    ["Import", "Datasets overview", "Review datasets", "Info sources", "Map / Export", "Settings", "About"],
+                    ["Import", "Datasets overview", "Review datasets", "Manage data", "Map", "Settings", "About"],
                 )
+                self.assertTrue(window.tabs.tabBar().usesScrollButtons())
+                self.assertEqual(window.tabs.tabBar().elideMode(), Qt.ElideRight)
+                self.assertFalse(window.tabs.tabBar().expanding())
+                self.assertIsInstance(window.import_tab.layout().itemAt(0).layout(), QGridLayout)
+                self.assertEqual(window.import_tab.layout().contentsMargins().left(), TAB_PAGE_MARGIN_PX)
+                self.assertEqual(window.review_datasets_tab.layout().contentsMargins().left(), TAB_PAGE_MARGIN_PX)
+                self.assertEqual(window.info_sources_tab.layout().contentsMargins().left(), TAB_PAGE_MARGIN_PX)
+                self.assertEqual(window.datasets_overview_tab.layout().contentsMargins().left(), TAB_PAGE_MARGIN_PX)
+                self.assertEqual(window.map_tab.layout().contentsMargins().left(), TAB_PAGE_MARGIN_PX)
+                self.assertEqual(window.settings_tab.layout().contentsMargins().left(), TAB_PAGE_MARGIN_PX)
+                self.assertEqual(window.about_tab.layout().contentsMargins().left(), TAB_PAGE_MARGIN_PX)
                 self.assertEqual(window.datasets_group_box.title(), "Datasets")
                 self.assertEqual(window.browse_button.text(), "Browse")
                 self.assertEqual(window.scan_button.text(), "Rebuild archive")
@@ -170,7 +181,7 @@ class MainWindowTests(unittest.TestCase):
                 self.assertEqual(window.ai_context_group_box.title(), "AI Classification Context")
                 self.assertEqual(window.show_all_button.text(), "Select All")
                 self.assertEqual(window.hide_all_button.text(), "Clear All")
-                self.assertEqual(window.show_group_button.text(), "Select Group")
+                self.assertEqual(window.show_group_button.text(), "Add Group")
                 self.assertEqual(window.hide_group_button.text(), "Clear Group")
                 self.assertEqual(window.fast_info_button.text(), "Find info (fast)")
                 self.assertEqual(window.run_ai_sources_button.text(), "Find info (AI)")
@@ -185,6 +196,18 @@ class MainWindowTests(unittest.TestCase):
                 self.assertEqual(window.hide_from_maps_button.text(), "Hide from maps")
                 self.assertEqual(window.include_in_report_button.text(), "Include in export")
                 self.assertEqual(window.exclude_from_report_button.text(), "Exclude from export")
+                self.assertEqual(window.fast_info_button.minimumHeight(), 34)
+                self.assertEqual(window.show_all_button.minimumHeight(), 34)
+                self.assertEqual(window.export_gpkg_button.minimumHeight(), 34)
+                self.assertEqual(window.show_all_button.minimumWidth(), 136)
+                self.assertEqual(window.hide_all_button.minimumWidth(), 136)
+                self.assertEqual(window.show_group_button.minimumWidth(), 136)
+                self.assertEqual(window.hide_group_button.minimumWidth(), 136)
+                self.assertEqual(window.show_all_button.maximumWidth(), 136)
+                self.assertEqual(window.hide_all_button.maximumWidth(), 136)
+                self.assertEqual(window.show_group_button.maximumWidth(), 136)
+                self.assertEqual(window.hide_group_button.maximumWidth(), 136)
+                self.assertEqual(window.selection_group_combo.maximumWidth(), 300)
                 self.assertEqual(window.transfer_ai_selected_button.maximumWidth(), 220)
                 self.assertEqual(window.save_dataset_button.maximumWidth(), 150)
                 self.assertEqual(window.review_dataset_filter_edit.placeholderText(), "Filter datasets by name, group, format, geometry or source path")
@@ -192,7 +215,7 @@ class MainWindowTests(unittest.TestCase):
                 self.assertEqual(window.dataset_nav_back_button.text(), "Back")
                 self.assertEqual(window.dataset_nav_next_button.text(), "Next")
                 self.assertEqual(window.dataset_nav_last_button.text(), "Last")
-                self.assertIn("use this page for batch enrichment work", window.info_sources_intro_label.text().lower())
+                self.assertIn("define one checked working set", window.info_sources_intro_label.text().lower())
                 self.assertIn("find info (fast): local first-pass", window.review_actions_note.text().lower())
                 self.assertIn("find info (ai): updates ai title", window.review_actions_note.text().lower())
                 self.assertIn("refreshes likely external sources only", window.review_actions_note.text().lower())
@@ -207,6 +230,11 @@ class MainWindowTests(unittest.TestCase):
                 self.assertTrue(window.info_sources_tab.isAncestorOf(window.review_actions_group_box))
                 self.assertTrue(window.info_sources_tab.isAncestorOf(window.review_progress))
                 self.assertTrue(window.info_sources_tab.isAncestorOf(window.review_job_status))
+                self.assertTrue(window.info_sources_tab.isAncestorOf(window.export_gpkg_button))
+                self.assertFalse(window.map_tab.isAncestorOf(window.export_gpkg_button))
+                self.assertTrue(window.info_sources_tab.isAncestorOf(window.selection_group_box))
+                self.assertIs(window.info_sources_tab.layout().itemAt(1).widget(), window.selection_group_box)
+                self.assertIs(window.info_sources_tab.layout().itemAt(2).widget(), window.info_sources_splitter)
                 self.assertTrue(window.review_job_group_box.isAncestorOf(window.review_progress))
                 self.assertTrue(window.review_job_group_box.isAncestorOf(window.review_visibility_note))
                 self.assertTrue(window.datasets_overview_tab.isAncestorOf(window.datasets_group_box))
@@ -214,18 +242,19 @@ class MainWindowTests(unittest.TestCase):
                 self.assertTrue(window.review_actions_group_box.isAncestorOf(window.run_ai_sources_button))
                 self.assertTrue(window.review_actions_group_box.isAncestorOf(window.fast_info_button))
                 self.assertTrue(window.review_actions_group_box.isAncestorOf(window.find_sources_button))
-                self.assertTrue(window.review_actions_group_box.isAncestorOf(window.review_scope_combo))
                 self.assertTrue(window.review_actions_group_box.isAncestorOf(window.review_actions_note))
+                self.assertIsInstance(window.review_actions_group_box.layout().itemAt(1).layout(), QGridLayout)
+                self.assertTrue(window.selection_group_box.isAncestorOf(window.selection_group_combo))
                 self.assertTrue(window.selection_group_box.isAncestorOf(window.show_all_button))
                 self.assertTrue(window.selection_group_box.isAncestorOf(window.hide_all_button))
                 self.assertTrue(window.selection_group_box.isAncestorOf(window.show_group_button))
                 self.assertTrue(window.selection_group_box.isAncestorOf(window.hide_group_button))
                 self.assertTrue(window.selection_group_box.isAncestorOf(window.selection_help_label))
+                self.assertTrue(window.selection_group_box.isAncestorOf(window.selection_scope_status_label))
                 self.assertTrue(window.grouping_group_box.isAncestorOf(window.new_group_button))
                 self.assertTrue(window.grouping_group_box.isAncestorOf(window.apply_group_button))
                 self.assertTrue(window.grouping_group_box.isAncestorOf(window.regroup_button))
                 self.assertTrue(window.grouping_group_box.isAncestorOf(window.reset_groups_button))
-                self.assertTrue(window.grouping_group_box.isAncestorOf(window.grouping_scope_combo))
                 self.assertTrue(window.grouping_group_box.isAncestorOf(window.grouping_help_label))
                 self.assertTrue(window.dataset_actions_group_box.isAncestorOf(window.fill_ai_fields_button))
                 self.assertTrue(window.dataset_actions_group_box.isAncestorOf(window.make_visible_button))
@@ -234,9 +263,11 @@ class MainWindowTests(unittest.TestCase):
                 self.assertTrue(window.dataset_actions_group_box.isAncestorOf(window.exclude_from_report_button))
                 self.assertTrue(window.dataset_actions_group_box.isAncestorOf(window.dataset_actions_help_label))
                 self.assertTrue(window.dataset_details_group_box.isAncestorOf(window.dataset_name_edit))
+                self.assertTrue(window.dataset_details_group_box.isAncestorOf(window.dataset_group_combo))
                 self.assertTrue(window.dataset_details_group_box.isAncestorOf(window.source_style_label))
                 self.assertTrue(window.dataset_details_group_box.isAncestorOf(window.ai_description_box))
                 self.assertTrue(window.dataset_details_group_box.isAncestorOf(window.save_dataset_button))
+                self.assertIsInstance(window.map_tab.layout().itemAt(0).layout(), QGridLayout)
                 self.assertEqual(window.review_dataset_table.editTriggers(), QAbstractItemView.NoEditTriggers)
                 self.assertEqual(window.review_dataset_table.selectionBehavior(), QAbstractItemView.SelectRows)
                 self.assertEqual(window.review_dataset_table.selectionMode(), QAbstractItemView.SingleSelection)
@@ -291,26 +322,30 @@ class MainWindowTests(unittest.TestCase):
                 grouping_layout = window.grouping_group_box.layout()
                 dataset_actions_layout = window.dataset_actions_group_box.layout()
 
-                self.assertIsInstance(selection_layout, QGridLayout)
+                self.assertIsInstance(selection_layout, QVBoxLayout)
                 self.assertIsInstance(grouping_layout, QGridLayout)
                 self.assertIsInstance(dataset_actions_layout, QGridLayout)
 
-                self.assertEqual(selection_layout.getItemPosition(selection_layout.indexOf(window.show_all_button))[:2], (0, 0))
-                self.assertEqual(selection_layout.getItemPosition(selection_layout.indexOf(window.hide_all_button))[:2], (0, 1))
-                self.assertEqual(selection_layout.getItemPosition(selection_layout.indexOf(window.show_group_button))[:2], (1, 0))
-                self.assertEqual(selection_layout.getItemPosition(selection_layout.indexOf(window.hide_group_button))[:2], (1, 1))
+                selection_controls_layout = selection_layout.itemAt(1).layout()
+                self.assertIsInstance(selection_controls_layout, QHBoxLayout)
+                self.assertIs(selection_controls_layout.itemAt(0).widget(), window.show_all_button)
+                self.assertIs(selection_controls_layout.itemAt(1).widget(), window.hide_all_button)
+                self.assertIs(selection_controls_layout.itemAt(2).widget(), window.show_group_button)
+                self.assertIs(selection_controls_layout.itemAt(3).widget(), window.hide_group_button)
+                self.assertIs(selection_controls_layout.itemAt(6).widget(), window.selection_group_combo)
 
                 self.assertEqual(grouping_layout.getItemPosition(grouping_layout.indexOf(window.new_group_button))[:2], (0, 0))
                 self.assertEqual(grouping_layout.getItemPosition(grouping_layout.indexOf(window.apply_group_button))[:2], (0, 1))
                 self.assertEqual(grouping_layout.getItemPosition(grouping_layout.indexOf(window.regroup_button))[:2], (1, 0))
                 self.assertEqual(grouping_layout.getItemPosition(grouping_layout.indexOf(window.reset_groups_button))[:2], (1, 1))
-                self.assertEqual(grouping_layout.getItemPosition(grouping_layout.indexOf(window.grouping_scope_combo))[:2], (2, 1))
+                self.assertEqual(grouping_layout.getItemPosition(grouping_layout.indexOf(window.grouping_help_label))[:2], (2, 0))
 
                 self.assertEqual(dataset_actions_layout.getItemPosition(dataset_actions_layout.indexOf(window.fill_ai_fields_button))[:2], (0, 0))
                 self.assertEqual(dataset_actions_layout.getItemPosition(dataset_actions_layout.indexOf(window.make_visible_button))[:2], (0, 1))
                 self.assertEqual(dataset_actions_layout.getItemPosition(dataset_actions_layout.indexOf(window.hide_from_maps_button))[:2], (1, 0))
                 self.assertEqual(dataset_actions_layout.getItemPosition(dataset_actions_layout.indexOf(window.include_in_report_button))[:2], (1, 1))
                 self.assertEqual(dataset_actions_layout.getItemPosition(dataset_actions_layout.indexOf(window.exclude_from_report_button))[:2], (2, 0))
+                self.assertEqual(dataset_actions_layout.getItemPosition(dataset_actions_layout.indexOf(window.export_gpkg_button))[:2], (3, 0))
             finally:
                 window.close()
 
@@ -373,6 +408,51 @@ class MainWindowTests(unittest.TestCase):
                     self.assertEqual(window.review_dataset_table.item(0, 0).text(), "Charlie")
                     self.assertEqual(window.review_dataset_table.item(0, 1).text(), "Ungrouped")
                     self.assertEqual(window.review_dataset_table.item(0, 2).text(), "gpkg")
+            finally:
+                window.close()
+
+    def test_review_dataset_group_combo_reassigns_selected_dataset(self) -> None:
+        with patch("grasp.ui.main_window.WEBENGINE_AVAILABLE", False):
+            window = MainWindow()
+            try:
+                with tempfile.TemporaryDirectory() as tmp:
+                    window._set_workspace(tmp)
+                    window.repository.create_group("Transport")
+                    window.repository.replace_datasets(
+                        [
+                            DatasetRecord(
+                                dataset_id="a",
+                                source_path="D:/data/a.geojson",
+                                source_format="geojson",
+                                group_id="transport",
+                                cache_path="a.parquet",
+                            ),
+                            DatasetRecord(
+                                dataset_id="b",
+                                source_path="D:/data/b.geojson",
+                                source_format="geojson",
+                                group_id="ungrouped",
+                                cache_path="b.parquet",
+                            ),
+                        ]
+                    )
+
+                    window.refresh_all_views()
+                    window._set_review_dataset_table_selection("b")
+
+                    self.assertEqual(window.selected_dataset_id(), "b")
+                    self.assertEqual(window.dataset_group_combo.currentData(), "ungrouped")
+
+                    transport_index = window.dataset_group_combo.findData("transport")
+                    self.assertGreaterEqual(transport_index, 0)
+
+                    window.dataset_group_combo.setCurrentIndex(transport_index)
+
+                    self.assertEqual(window.repository.get_dataset("b").group_id, "transport")
+                    self.assertEqual(window.dataset_group_combo.currentData(), "transport")
+                    self.assertIn("Transport", [window.dataset_group_combo.itemText(index) for index in range(window.dataset_group_combo.count())])
+                    row_index = window._dataset_browser_row_ids.index("b")
+                    self.assertEqual(window.review_dataset_table.item(row_index, 1).text(), "Transport")
             finally:
                 window.close()
 
@@ -792,7 +872,7 @@ class MainWindowTests(unittest.TestCase):
 
                     self.assertEqual(captured, {})
                     self.assertIn(
-                        "1 new or changed dataset(s) are ready for Find info (fast) in Info sources.",
+                        "1 new or changed dataset(s) are ready for Find info (fast) in Manage data.",
                         window.log_text.toPlainText(),
                     )
             finally:
@@ -1892,8 +1972,7 @@ class MainWindowTests(unittest.TestCase):
                     )
 
                     with patch.object(window, "_prompt_group_count", return_value=2):
-                        window.grouping_scope_combo.setCurrentIndex(window.grouping_scope_combo.findData("checked"))
-                        window.start_regroup_for_scope()
+                        window.start_regroup_for_scope("checked")
 
                     self.assertEqual(
                         captured,
@@ -2370,7 +2449,7 @@ class MainWindowTests(unittest.TestCase):
                             group_item = candidate
                             break
                     self.assertIsNotNone(group_item)
-                    window.tree.setCurrentItem(group_item)
+                    window.selection_group_combo.setCurrentIndex(window.selection_group_combo.findData("transport"))
                     window.set_selected_group_checked(True)
 
                     self.assertEqual(window._checked_dataset_ids(), ["a", "b"])
@@ -2414,8 +2493,7 @@ class MainWindowTests(unittest.TestCase):
                         lambda fn, dataset_ids, success_message, **kwargs: captured.append((fn.__name__, dataset_ids))
                     )
 
-                    window.review_scope_combo.setCurrentIndex(window.review_scope_combo.findData("checked"))
-                    window.start_ai_for_scope()
+                    window.start_ai_for_scope("checked")
 
                     self.assertEqual(captured, [("_classify_dataset_ids", ["a"])])
             finally:
@@ -2454,8 +2532,7 @@ class MainWindowTests(unittest.TestCase):
                         )
                     )
 
-                    window.review_scope_combo.setCurrentIndex(window.review_scope_combo.findData("checked"))
-                    window.start_fast_info_for_scope()
+                    window.start_fast_info_for_scope("checked")
 
                     self.assertEqual(captured, [("_heuristic_classify_dataset_ids", ["a"], "Fast Local Classification")])
             finally:
@@ -2499,8 +2576,7 @@ class MainWindowTests(unittest.TestCase):
                         lambda fn, dataset_ids, success_message, **kwargs: captured.append(dataset_ids)
                     )
 
-                    window.review_scope_combo.setCurrentIndex(window.review_scope_combo.findData("all"))
-                    window.start_ai_for_scope()
+                    window.start_ai_for_scope("all")
 
                     self.assertEqual(captured, [["a", "b", "c"]])
             finally:
@@ -2531,8 +2607,7 @@ class MainWindowTests(unittest.TestCase):
                         lambda fn, dataset_ids, success_message, **kwargs: captured.append((fn.__name__, dataset_ids))
                     )
 
-                    window.review_scope_combo.setCurrentIndex(window.review_scope_combo.findData("checked"))
-                    window.start_sources_for_scope()
+                    window.start_sources_for_scope("checked")
 
                     self.assertEqual(captured, [("_search_dataset_ids", ["a"])])
             finally:
@@ -2572,8 +2647,7 @@ class MainWindowTests(unittest.TestCase):
                         lambda fn, dataset_ids, success_message, **kwargs: captured.append(dataset_ids)
                     )
 
-                    window.review_scope_combo.setCurrentIndex(window.review_scope_combo.findData("checked"))
-                    window.start_ai_for_scope()
+                    window.start_ai_for_scope("checked")
 
                     self.assertEqual(captured, [["a", "b"]])
             finally:
