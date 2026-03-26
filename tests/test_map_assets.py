@@ -32,6 +32,13 @@ class MapAssetTests(unittest.TestCase):
         self.assertIn("window.addEventListener(\"resize\", handleViewportResize);", html)
         self.assertIn("function currentMapCanvasSize()", html)
 
+    def test_leaflet_asset_refits_when_active_dataset_scope_changes(self) -> None:
+        html = self._leaflet_map_html()
+        self.assertIn("let lastLeafletAutoFitKey = \"\";", html)
+        self.assertIn("function leafletAutoFitKey(state, datasets)", html)
+        self.assertIn("function shouldAutoFitLeaflet(state, datasets)", html)
+        self.assertIn("if (shouldAutoFitLeaflet(state, loaded.datasets)){", html)
+
     def test_leaflet_asset_supports_optional_state_payload_for_manual_profiling(self) -> None:
         html = self._leaflet_map_html()
         self.assertIn("async function reloadState(rawState)", html)

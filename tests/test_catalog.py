@@ -10,6 +10,27 @@ from grasp.models import DatasetRecord, DatasetUnderstanding, SourceCandidate
 
 
 class CatalogRepositoryTests(unittest.TestCase):
+    def test_dataset_default_name_humanizes_imported_source_file_name(self) -> None:
+        dataset = DatasetRecord(
+            dataset_id="parks",
+            source_path="D:/data/nationalparks.shp",
+            source_format="shp",
+        )
+
+        self.assertEqual(dataset.source_basename, "nationalparks.shp")
+        self.assertEqual(dataset.default_name, "National parks")
+        self.assertEqual(dataset.preferred_name, "National parks")
+
+    def test_dataset_default_name_preserves_explicit_layer_name(self) -> None:
+        dataset = DatasetRecord(
+            dataset_id="parks-layer",
+            source_path="D:/data/bundle.gpkg",
+            source_format="gpkg",
+            layer_name="Protected Area",
+        )
+
+        self.assertEqual(dataset.default_name, "Protected Area")
+
     def test_repository_persists_datasets_understandings_and_sources(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo = CatalogRepository(Path(tmp) / "catalog.sqlite")

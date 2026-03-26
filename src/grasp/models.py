@@ -2,7 +2,46 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
 import json
+from pathlib import Path
+import re
 from typing import Any
+
+
+_SPACE_PATTERN = re.compile(r"\s+")
+_TOKEN_SEPARATOR_PATTERN = re.compile(r"[_\-.]+")
+_ALPHA_NUMERIC_BOUNDARY_PATTERN = re.compile(r"(?<=[A-Za-z])(?=\d)|(?<=\d)(?=[A-Za-z])")
+_CAMEL_CASE_BOUNDARY_PATTERN = re.compile(r"(?<=[a-z])(?=[A-Z])")
+_KNOWN_COMPOUND_SUFFIXES = (
+    "boundaries",
+    "districts",
+    "provinces",
+    "wetlands",
+    "corridors",
+    "forests",
+    "regions",
+    "villages",
+    "airports",
+    "harbours",
+    "ports",
+    "rivers",
+    "roads",
+    "parks",
+    "areas",
+    "boundary",
+    "district",
+    "province",
+    "wetland",
+    "corridor",
+    "forest",
+    "region",
+    "village",
+    "airport",
+    "harbour",
+    "river",
+    "road",
+    "park",
+    "area",
+)
 
 
 @dataclass(slots=True)
@@ -45,7 +84,7 @@ class DatasetRecord:
     def default_name(self) -> str:
         if self.layer_name:
             return self.layer_name
-        return self.source_basename
+        return humanize_source_basename(self.source_basename)
 
     @property
     def source_basename(self) -> str:
@@ -170,3 +209,37 @@ class LayerStyle:
             return cls(**data)
         except TypeError:
             return None
+
+
+def humanize_source_basename(source_path: str) -> str:
+    basename = str(source_path or "").replace("\\", "/").rstrip("/").split("/")[-1]
+    stem = Path(basename).stem or basename
+    return _humanize_dataset_name(stem) or stem or basename
+
+
+def _humanize_dataset_name(value: str) -> str:
+    cleaned = str(value or "").strip()
+    if not cleaned:
+        return ""
+    cleaned = _TOKEN_SEPARATOR_PATTERN.sub(" ", cleaned)
+    cleaned = _CAMEL_CASE_BOUNDARY_PATTERN.sub(" ", cleaned)
+    cleaned = _ALPHA_NUMERIC_BOUNDARY_PATTERN.sub(" ", cleaned)
+    tokens = [_split_compound_token(token) for token in cleaned.split()]
+    humanized = _SPACE_PATTERN.sub(" ", " ".join(tokens)).strip()
+    if not humanized:
+        return ""
+    return humanized[:1].upper() + humanized[1:]
+
+
+def _split_compound_token(token: str) -> str:
+    lowered = token.lower()
+    if " " in token or not lowered.isalpha():
+        return token
+    for suffix in _KNOWN_COMPOUND_SUFFIXES:
+        if not lowered.endswith(suffix):
+            continue
+        prefix = token[: -len(suffix)]
+        if len(prefix) < 3:
+            continue
+        return f"{prefix} {suffix}"
+    return token

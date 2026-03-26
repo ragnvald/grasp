@@ -309,6 +309,7 @@
     let pendingReloadState = null;
     let mapMode = "browse";
     let browseDatasetId = "";
+    let lastLeafletAutoFitKey = "";
     let layerListVisible = false;
     const SVG_NS = "http://www.w3.org/2000/svg";
     const DEFAULT_OFFLINE_CANVAS_WIDTH = 1200;
@@ -663,7 +664,7 @@
             const renderStartedMs = performance.now();
             await syncLeafletLayers(loaded.visibleLayers);
             logTiming("syncLeafletLayers", renderStartedMs, "layers=" + loaded.visibleLayers.length);
-            if (!viewInitialized){
+            if (shouldAutoFitLeaflet(state, loaded.datasets)){
               const initialBounds = preferredInitialBounds(state, loaded.datasets);
               if (initialBounds){
                 fitLeafletBounds(initialBounds);
@@ -1063,6 +1064,37 @@
         })));
       }
       return null;
+    }
+
+    function leafletAutoFitKey(state, datasets){
+      const normalizedDatasets = Array.isArray(datasets) ? datasets : [];
+      const datasetIdToken = normalizedDatasets.map(function(dataset){
+        return dataset.dataset_id || "";
+      }).join(",");
+      if (mapMode === "browse"){
+        const currentDataset = currentBrowseDataset(normalizedDatasets);
+        if (currentDataset){
+          const bboxToken = Array.isArray(currentDataset.bbox) ? currentDataset.bbox.join(",") : "";
+          return ["browse", currentDataset.dataset_id || "", bboxToken, datasetIdToken].join("|");
+        }
+      }
+      const boundsToken = state && Array.isArray(state.bounds) && state.bounds.length === 4
+        ? normalizedBounds(state.bounds).join(",")
+        : "";
+      return [mapMode, boundsToken, datasetIdToken].join("|");
+    }
+
+    function shouldAutoFitLeaflet(state, datasets){
+      const nextKey = leafletAutoFitKey(state, datasets);
+      if (!viewInitialized){
+        lastLeafletAutoFitKey = nextKey;
+        return true;
+      }
+      if (nextKey && nextKey !== lastLeafletAutoFitKey){
+        lastLeafletAutoFitKey = nextKey;
+        return true;
+      }
+      return false;
     }
 
     function preferredDisplayBounds(state, visibleLayers){
