@@ -35,10 +35,19 @@ class IntelligenceService:
         target_group_count: int,
         *,
         timeout_s: float | None = None,
+        group_count_bounds: tuple[int, int] | None = None,
     ) -> dict[str, str]:
         grouper = getattr(self.classifier, "group_datasets", None)
         if callable(grouper):
-            return grouper(datasets, target_group_count, timeout_s=timeout_s)
+            try:
+                return grouper(
+                    datasets,
+                    target_group_count,
+                    timeout_s=timeout_s,
+                    group_count_bounds=group_count_bounds,
+                )
+            except TypeError:
+                return grouper(datasets, target_group_count, timeout_s=timeout_s)
         return {}
 
 

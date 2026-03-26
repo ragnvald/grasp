@@ -106,7 +106,7 @@ REMOTE_AI_REQUEST_COOLDOWN_S = 0.35
 UNDERSTANDING_PERSIST_BATCH_SIZE = 24
 MAP_HTTP_USER_AGENT = f"GRASP-Desktop (+{APP_REPOSITORY_URL})"
 UI_ASSETS_DIR = Path(__file__).resolve().parent / "assets"
-ABOUT_ILLUSTRATION_PATH = UI_ASSETS_DIR / "about_vacuum_gpkg.svg"
+ABOUT_ILLUSTRATION_PATH = UI_ASSETS_DIR / "about_robot_gpkg.png"
 APP_ICON_PATH = UI_ASSETS_DIR / "grasp_app_icon.svg"
 # These labels reflect the current archive-oriented wording requested for the import flow.
 LOAD_ARCHIVE_LABEL = "Load data from folder"
@@ -848,6 +848,7 @@ class MainWindow(QMainWindow):
         self.map_controls_layout.addWidget(self.map_scope_label, 0, Qt.AlignRight)
         self.map_scope_combo = QComboBox()
         self.map_scope_combo.addItem("Visible on map", "visible")
+        self.map_scope_combo.addItem("Checked working set", "checked")
         self.map_scope_combo.addItem("Show all", "all")
         self.map_scope_combo.currentIndexChanged.connect(lambda _index: self.refresh_map())
         self.map_controls_layout.addWidget(self.map_scope_combo, 0, Qt.AlignRight)
@@ -957,7 +958,10 @@ class MainWindow(QMainWindow):
         ai_context_layout.addWidget(self.settings_context_bbox_checkbox)
 
         ai_group_layout.addWidget(self.ai_context_group_box)
-        layout.addWidget(self.ai_settings_group_box)
+        self.settings_columns_layout = QHBoxLayout()
+        self.settings_columns_layout.setContentsMargins(0, 0, 0, 0)
+        self.settings_columns_layout.setSpacing(12)
+        self.settings_columns_layout.addWidget(self.ai_settings_group_box, 3)
 
         self.search_settings_group_box = QGroupBox("Search Settings")
         search_group_layout = QVBoxLayout(self.search_settings_group_box)
@@ -975,7 +979,8 @@ class MainWindow(QMainWindow):
         self.settings_search_candidates_edit = QLineEdit()
         search_form.addRow("Search target candidates", self.settings_search_candidates_edit)
         search_group_layout.addLayout(search_form)
-        layout.addWidget(self.search_settings_group_box)
+        self.settings_columns_layout.addWidget(self.search_settings_group_box, 2, Qt.AlignTop)
+        layout.addLayout(self.settings_columns_layout)
 
         button_row = QHBoxLayout()
         save_settings_button = QPushButton("Save Settings")
@@ -1000,69 +1005,61 @@ class MainWindow(QMainWindow):
         self.about_acronym_label.setWordWrap(True)
         layout.addWidget(self.about_acronym_label)
 
-        self.about_tagline_label = QLabel(APP_TAGLINE)
+        self.about_tagline_label = QLabel(
+            f"{APP_TAGLINE}. GRASP is designed for the messy front end of geospatial work, where datasets need to be collected, reviewed, clarified, and turned into something that can actually be used or shared."
+        )
         self.about_tagline_label.setWordWrap(True)
         self.about_tagline_label.setStyleSheet("font-size: 14px; color: #6a5533;")
         layout.addWidget(self.about_tagline_label)
 
-        self.about_illustration_path = ABOUT_ILLUSTRATION_PATH
-        self.about_icon_path = APP_ICON_PATH
-        self.about_illustration_label = QLabel()
-        self.about_illustration_label.setObjectName("AboutIllustration")
-        self.about_illustration_label.setAlignment(Qt.AlignCenter)
-        self.about_illustration_label.setMinimumHeight(220)
-        self.about_illustration_label.setStyleSheet(
-            "background-color: #fbf6ee; border: 1px solid #d4c0a2; border-radius: 16px; padding: 10px;"
-        )
-        illustration_pixmap = QPixmap(str(self.about_illustration_path))
-        if illustration_pixmap.isNull():
-            self.about_illustration_label.setText(
-                "Playful GRASP illustration: scattered dataset files are funneled into a GPKG bag."
-            )
-            self.about_illustration_label.setWordWrap(True)
-        else:
-            self.about_illustration_label.setPixmap(
-                illustration_pixmap.scaled(560, 220, Qt.KeepAspectRatio, Qt.SmoothTransformation)
-            )
-        layout.addWidget(self.about_illustration_label)
+        self.about_body_host = QWidget()
+        self.about_body_layout = QHBoxLayout(self.about_body_host)
+        self.about_body_layout.setContentsMargins(0, 0, 0, 0)
+        self.about_body_layout.setSpacing(16)
+
+        self.about_text_panel = QWidget()
+        self.about_text_layout = QVBoxLayout(self.about_text_panel)
+        self.about_text_layout.setContentsMargins(0, 0, 0, 0)
+        self.about_text_layout.setSpacing(8)
 
         self.about_author_label = QLabel(f"Created by {APP_AUTHOR}")
         self.about_author_label.setWordWrap(True)
-        layout.addWidget(self.about_author_label)
+        self.about_text_layout.addWidget(self.about_author_label)
 
         self.about_purpose_label = QLabel(
-            "Why I made it: GIS work can involve an overwhelming number of datasets that need to be "
-            "compiled into a unified store for further use or distribution. Manual handling is just "
-            "not realistic at that scale, so GRASP is a desktop application for working through folders "
-            "of GIS vector files such as Shapefile, GeoPackage and GeoParquet datasets."
+            "Why I made it: geospatial work can begin with an overwhelming number of datasets coming from different "
+            "sources, projects, and file types. Before those datasets can support analysis, distribution, or long-term "
+            "reuse, they often need to be gathered into one practical store, reviewed, renamed, grouped, and described "
+            "in a more consistent way. Doing that manually is slow, repetitive, and hard to scale. GRASP is my attempt "
+            "to make that stage of the work more manageable."
         )
         self.about_purpose_label.setWordWrap(True)
-        layout.addWidget(self.about_purpose_label)
+        self.about_text_layout.addWidget(self.about_purpose_label)
 
-        self.about_mission_label = QLabel(APP_MISSION)
+        self.about_mission_label = QLabel(
+            f"{APP_MISSION} In practical terms, it helps move a folder full of disconnected layers toward a more coherent "
+            "package that other people, teams, or downstream tools can understand and work with."
+        )
         self.about_mission_label.setWordWrap(True)
-        layout.addWidget(self.about_mission_label)
+        self.about_text_layout.addWidget(self.about_mission_label)
 
         self.about_capabilities_label = QLabel(
-            "What it does:\n"
-            "- scans folders for GIS datasets\n"
-            "- profiles and enriches datasets with AI-generated names and descriptions\n"
-            "- helps users group datasets into rational categories\n"
-            "- previews layers in a lightweight desktop map\n"
-            "- generates styling from names and descriptions\n"
-            "- exports a packaged GeoPackage with metadata and QGIS project information\n"
-            "- helps assemble a more usable, unified dataset package for follow-on work"
+            "What it does: GRASP scans folders for GIS datasets, profiles what it finds, builds clearer metadata with "
+            "AI assistance, suggests groupings, lets you review layers one by one, previews them in a lightweight desktop "
+            "map, generates styling, and exports a packaged GeoPackage with metadata and QGIS project information. The goal "
+            "is not only to collect files, but to turn them into a more usable, unified dataset package for follow-on work."
         )
         self.about_capabilities_label.setWordWrap(True)
-        layout.addWidget(self.about_capabilities_label)
+        self.about_text_layout.addWidget(self.about_capabilities_label)
 
         self.about_note_label = QLabel(
-            "Approach and trade-off: the upside is faster processing and AI assistance that can help fill "
-            "gaps when source metadata is incomplete. The downside is that automation may still miss details, "
-            "so human review is still needed before distribution."
+            "Approach and trade-off: the upside is speed, repeatability, and AI support that can help fill gaps when source "
+            "metadata is incomplete or uneven. The downside is that automated processing can still miss details, simplify too "
+            "aggressively, or choose groupings that need correction. GRASP is therefore meant to accelerate careful human work, "
+            "not replace review."
         )
         self.about_note_label.setWordWrap(True)
-        layout.addWidget(self.about_note_label)
+        self.about_text_layout.addWidget(self.about_note_label)
 
         self.about_links_label = QLabel(
             f'Links: <a href="{APP_LINKEDIN_URL}">LinkedIn profile</a> | '
@@ -1071,9 +1068,31 @@ class MainWindow(QMainWindow):
         self.about_links_label.setWordWrap(True)
         self.about_links_label.setOpenExternalLinks(True)
         self.about_links_label.setTextFormat(Qt.RichText)
-        layout.addWidget(self.about_links_label)
+        self.about_text_layout.addWidget(self.about_links_label)
+        self.about_text_layout.addStretch(1)
 
-        layout.addStretch(1)
+        self.about_illustration_path = ABOUT_ILLUSTRATION_PATH
+        self.about_icon_path = APP_ICON_PATH
+        self.about_illustration_label = QLabel()
+        self.about_illustration_label.setObjectName("AboutIllustration")
+        self.about_illustration_label.setAlignment(Qt.AlignCenter)
+        self.about_illustration_label.setMinimumSize(320, 320)
+        self.about_illustration_label.setStyleSheet(
+            "background-color: #fbf6ee; border: 1px solid #d4c0a2; border-radius: 16px; padding: 10px;"
+        )
+        illustration_pixmap = QPixmap(str(self.about_illustration_path))
+        if illustration_pixmap.isNull():
+            self.about_illustration_label.setText(
+                "Playful GRASP illustration: a helper robot sweeps scattered dataset files into a bag labeled GPKG."
+            )
+            self.about_illustration_label.setWordWrap(True)
+        else:
+            self.about_illustration_label.setPixmap(
+                illustration_pixmap.scaled(420, 420, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            )
+        self.about_body_layout.addWidget(self.about_text_panel, 3)
+        self.about_body_layout.addWidget(self.about_illustration_label, 2, Qt.AlignTop)
+        layout.addWidget(self.about_body_host, 1)
 
     def browse_folder(self) -> None:
         initial_folder = self.folder_edit.text().strip() or self.current_settings.last_folder.strip() or str(Path.home())
@@ -1635,7 +1654,9 @@ class MainWindow(QMainWindow):
             return
         self.repository.set_visibility_for_datasets(dataset_ids, visible)
         if visible:
-            self.map_scope_combo.setCurrentIndex(self.map_scope_combo.findData("visible"))
+            checked_scope_index = self.map_scope_combo.findData("checked")
+            if checked_scope_index >= 0:
+                self.map_scope_combo.setCurrentIndex(checked_scope_index)
             self.append_activity_log(
                 f"Enabled map visibility for {len(dataset_ids)} checked dataset(s).",
                 activity="Selection Actions",
@@ -1953,6 +1974,14 @@ class MainWindow(QMainWindow):
     def _map_scope(self) -> str:
         return str(self.map_scope_combo.currentData() or "visible")
 
+    def _sync_map_bridge_scope(self, scope: str, dataset_ids: list[str]) -> None:
+        if self.map_bridge is None:
+            return
+        self.map_bridge.set_scope(scope)
+        scoped_setter = getattr(self.map_bridge, "set_scoped_dataset_ids", None)
+        if callable(scoped_setter):
+            scoped_setter(dataset_ids if scope == "checked" else None)
+
     def _selected_batch_group_id(self) -> str:
         if not hasattr(self, "selection_group_combo"):
             return ""
@@ -2102,6 +2131,11 @@ class MainWindow(QMainWindow):
                 return {
                     "action": "retry",
                     "target_group_count": actual_group_count,
+                    "regroup_policy": {
+                        "variance_prompt_enabled": False,
+                        "max_attempt_count": 1,
+                        "locked_variance_message": "Higher regroup target chosen. No further automatic group-count renegotiation will be suggested for this rerun.",
+                    },
                     "message": (
                         f"AI regroup proposed {actual_group_count} groups for requested target {requested_target_group_count}. "
                         f"Retrying with the higher AI-suggested target of {actual_group_count} groups."
@@ -2111,9 +2145,20 @@ class MainWindow(QMainWindow):
                 return {
                     "action": "retry",
                     "target_group_count": upper_bound,
+                    "regroup_policy": {
+                        "variance_prompt_enabled": False,
+                        "max_attempt_count": 1,
+                        "group_count_bounds": (lower_bound, upper_bound),
+                        "hard_max_target_group_count": upper_bound,
+                        "locked_variance_message": (
+                            f"Stay-within-range selected. This rerun is locked to the {tolerance_text} group range "
+                            "with no further upward regroup retries."
+                        ),
+                    },
                     "message": (
                         f"AI regroup proposed {actual_group_count} groups for requested target {requested_target_group_count}. "
-                        f"Retrying within the allowed +/-10% range at {upper_bound} groups."
+                        f"Retrying once within the allowed +/-10% range at {upper_bound} groups. "
+                        "No further upward regroup retries will be allowed."
                     ),
                 }
             return {
@@ -2141,9 +2186,19 @@ class MainWindow(QMainWindow):
             return {
                 "action": "retry",
                 "target_group_count": lower_bound,
+                "regroup_policy": {
+                    "variance_prompt_enabled": False,
+                    "max_attempt_count": 1,
+                    "group_count_bounds": (lower_bound, upper_bound),
+                    "hard_min_target_group_count": lower_bound,
+                    "hard_max_target_group_count": upper_bound,
+                    "locked_variance_message": (
+                        f"Stay-within-range selected. This rerun is locked to the {tolerance_text} group range."
+                    ),
+                },
                 "message": (
                     f"AI regroup proposed {actual_group_count} groups for requested target {requested_target_group_count}. "
-                    f"Retrying within the allowed +/-10% range at {lower_bound} groups."
+                    f"Retrying once within the allowed +/-10% range at {lower_bound} groups."
                 ),
             }
         if clicked is review_button:
@@ -2541,8 +2596,7 @@ class MainWindow(QMainWindow):
         if self.repository is None:
             self.map_summary.setText("No project loaded.")
             return
-        if self.map_bridge is not None:
-            self.map_bridge.set_scope(map_scope)
+        self._sync_map_bridge_scope(map_scope, map_dataset_ids)
         map_scope_label = self.map_scope_combo.currentText().strip() or "Visible on map"
         if self._review_job_running:
             self.map_summary.setText(
@@ -2566,11 +2620,11 @@ class MainWindow(QMainWindow):
                 "Preparing the embedded map renderer..."
             )
             return
-        if self.map_bridge is not None:
-            self.map_bridge.set_scope(map_scope)
         scope_note = (
             "using datasets marked Visible on map."
             if map_scope == "visible"
+            else "using the current checked working set."
+            if map_scope == "checked"
             else "showing all datasets."
         )
         self.map_summary.setText(
@@ -2943,8 +2997,14 @@ class MainWindow(QMainWindow):
         target_group_count: int,
         *,
         scope_label: str,
+        regroup_policy: dict[str, object] | None = None,
     ) -> None:
-        worker = FunctionWorker(self._prepare_regroup_assignments, dataset_ids, target_group_count)
+        worker = FunctionWorker(
+            self._prepare_regroup_assignments,
+            dataset_ids,
+            target_group_count,
+            regroup_policy=regroup_policy,
+        )
         log_activity = self._resolve_log_activity("AI Regroup")
         start_message = f"Regrouping {scope_label}..."
         progress_token = self._begin_background_activity(start_message, activity=log_activity)
@@ -2977,6 +3037,7 @@ class MainWindow(QMainWindow):
             assignments = dict((proposal or {}).get("assignments") or {})
             dataset_ids = list((proposal or {}).get("dataset_ids") or assignments.keys())
             requested_target_group_count = int((proposal or {}).get("target_group_count") or 0)
+            regroup_policy = dict((proposal or {}).get("regroup_policy") or {})
             if not assignments:
                 self._update_background_activity_progress(token, 100)
                 self.review_progress.setValue(100)
@@ -2984,7 +3045,16 @@ class MainWindow(QMainWindow):
                 self.statusBar().showMessage("AI regroup produced no assignments.", 5000)
                 self._on_review_job_finished("AI regroup produced no assignments.")
                 return
-            regroup_decision = self._resolve_regroup_group_count_variance(assignments, requested_target_group_count)
+            variance_prompt_enabled = bool(regroup_policy.get("variance_prompt_enabled", True))
+            regroup_decision = (
+                self._resolve_regroup_group_count_variance(assignments, requested_target_group_count)
+                if variance_prompt_enabled
+                else None
+            )
+            if not variance_prompt_enabled:
+                locked_message = str(regroup_policy.get("locked_variance_message") or "").strip()
+                if locked_message:
+                    self.append_activity_log(locked_message, activity="AI Regroup")
             if regroup_decision is not None:
                 decision_message = str(regroup_decision.get("message") or "").strip()
                 if decision_message:
@@ -2993,11 +3063,17 @@ class MainWindow(QMainWindow):
                 action = str(regroup_decision.get("action") or "").strip().lower()
                 if action == "retry":
                     next_target_group_count = max(1, int(regroup_decision.get("target_group_count") or requested_target_group_count or 1))
+                    next_regroup_policy = dict(regroup_decision.get("regroup_policy") or {})
                     self._update_background_activity_progress(token, 100)
                     self.review_progress.setValue(100)
                     self._finish_background_activity(token, decision_message or "Retrying AI regroup with a new group target.")
                     self._on_review_job_finished(decision_message or "Retrying AI regroup with a new group target.")
-                    self._start_regroup_preview_job(dataset_ids, next_target_group_count, scope_label=scope_label)
+                    self._start_regroup_preview_job(
+                        dataset_ids,
+                        next_target_group_count,
+                        scope_label=scope_label,
+                        regroup_policy=next_regroup_policy,
+                    )
                     return
                 if action == "cancel":
                     self._update_background_activity_progress(token, 100)
@@ -3377,6 +3453,7 @@ class MainWindow(QMainWindow):
         dataset_ids: list[str],
         target_group_count: int,
         *,
+        regroup_policy: dict[str, object] | None = None,
         status_callback=None,
         progress_callback=None,
     ) -> int:
@@ -3458,6 +3535,7 @@ class MainWindow(QMainWindow):
                 raw_assignments = self._group_datasets_for_regroup(
                     datasets,
                     target_group_count,
+                    regroup_policy=regroup_policy,
                     status_callback=status_callback,
                     timeout_s=remaining_grouping_budget_s,
                 )
@@ -3505,6 +3583,7 @@ class MainWindow(QMainWindow):
             "assignments": assignments,
             "dataset_ids": list(dataset_ids),
             "target_group_count": int(target_group_count),
+            "regroup_policy": dict(regroup_policy or {}),
         }
 
     def _dataset_for_regroup(self, dataset: DatasetRecord) -> DatasetRecord:
@@ -3569,14 +3648,18 @@ class MainWindow(QMainWindow):
         target_group_count: int,
         *,
         timeout_s: float | None,
+        group_count_bounds: tuple[int, int] | None = None,
     ) -> dict[str, str]:
         grouper = getattr(self.intelligence_service, "group_datasets", None)
         if not callable(grouper):
             return {}
         if timeout_s is None:
-            return grouper(datasets, target_group_count)
+            try:
+                return grouper(datasets, target_group_count, group_count_bounds=group_count_bounds)
+            except TypeError:
+                return grouper(datasets, target_group_count)
         try:
-            return grouper(datasets, target_group_count, timeout_s=timeout_s)
+            return grouper(datasets, target_group_count, timeout_s=timeout_s, group_count_bounds=group_count_bounds)
         except TypeError:
             return grouper(datasets, target_group_count)
 
@@ -3585,6 +3668,7 @@ class MainWindow(QMainWindow):
         datasets: list,
         target_group_count: int,
         *,
+        regroup_policy: dict[str, object] | None = None,
         status_callback=None,
         timeout_s: float | None,
     ) -> dict[str, str]:
@@ -3614,16 +3698,24 @@ class MainWindow(QMainWindow):
 
         def _run_grouping(target: int) -> dict[str, str]:
             effective_timeout_s = _remaining_timeout()
+            group_count_bounds = tuple(regroup_policy.get("group_count_bounds") or ()) if regroup_policy else ()
+            normalized_group_count_bounds = (
+                (int(group_count_bounds[0]), int(group_count_bounds[1]))
+                if len(group_count_bounds) == 2
+                else None
+            )
             if not remote_available:
                 return self.heuristic_intelligence_service.group_datasets(
                     datasets,
                     target,
                     timeout_s=effective_timeout_s,
+                    group_count_bounds=normalized_group_count_bounds,
                 )
             return self._group_datasets_with_timeout(
                 datasets,
                 target,
                 timeout_s=effective_timeout_s,
+                group_count_bounds=normalized_group_count_bounds,
             )
 
         def _consume_grouping_error() -> None:
@@ -3640,6 +3732,8 @@ class MainWindow(QMainWindow):
 
         if not assignments or not callable(broad_checker):
             return assignments
+        max_attempt_count = max(1, int((regroup_policy or {}).get("max_attempt_count") or 3))
+        hard_max_target_group_count = int((regroup_policy or {}).get("hard_max_target_group_count") or 0)
         current_target = int(target_group_count)
         current_group_count = _group_count(assignments)
         current_still_broad = broad_checker(datasets, assignments, current_target)
@@ -3651,9 +3745,15 @@ class MainWindow(QMainWindow):
         best_is_broad = current_still_broad
         attempt_count = 1
 
-        while best_is_broad and attempt_count < 3:
+        while best_is_broad and attempt_count < max_attempt_count:
             retry_target = self._suggest_regroup_retry_target(len(datasets), best_target)
+            if hard_max_target_group_count > 0:
+                retry_target = min(retry_target, hard_max_target_group_count)
             if retry_target <= best_target:
+                if status_callback and hard_max_target_group_count > 0 and best_target >= hard_max_target_group_count:
+                    status_callback(
+                        f"Grouping still looks broad, but the hard regroup ceiling of {hard_max_target_group_count} group(s) prevents further upward retries."
+                    )
                 break
             remaining_timeout_s = _remaining_timeout()
             if remaining_timeout_s is not None and remaining_timeout_s < 5.0:

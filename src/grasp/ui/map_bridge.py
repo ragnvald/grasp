@@ -42,12 +42,20 @@ class MapBridge(QObject):
         self._geojson_cache: OrderedDict[str, tuple[str, str]] = OrderedDict()
         self._geojson_cache_size_bytes = 0
         self._scope = "visible"
+        self._scoped_dataset_ids: set[str] = set()
 
     def set_scope(self, scope: str) -> None:
-        if str(scope or "").lower() == "all":
+        normalized_scope = str(scope or "").lower()
+        if normalized_scope == "all":
             self._scope = "all"
             return
+        if normalized_scope == "checked":
+            self._scope = "checked"
+            return
         self._scope = "visible"
+
+    def set_scoped_dataset_ids(self, dataset_ids: list[str] | None) -> None:
+        self._scoped_dataset_ids = {str(dataset_id).strip() for dataset_id in (dataset_ids or []) if str(dataset_id).strip()}
 
     @Slot(result=str)
     def getState(self) -> str:
@@ -135,6 +143,10 @@ class MapBridge(QObject):
         datasets = self.repository.list_datasets()
         if self._scope == "all":
             return datasets
+        if self._scope == "checked":
+            if not self._scoped_dataset_ids:
+                return []
+            return [dataset for dataset in datasets if dataset.dataset_id in self._scoped_dataset_ids]
         return [dataset for dataset in datasets if dataset.visibility]
 
     def _resolve_cache_path(self, dataset) -> Path:

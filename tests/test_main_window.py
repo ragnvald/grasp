@@ -305,6 +305,9 @@ class MainWindowTests(unittest.TestCase):
                 self.assertTrue(window.ai_settings_group_box.isAncestorOf(window.settings_data_language_combo))
                 self.assertTrue(window.ai_settings_group_box.isAncestorOf(window.settings_timeout_edit))
                 self.assertTrue(window.ai_settings_group_box.isAncestorOf(window.ai_context_group_box))
+                self.assertTrue(hasattr(window, "settings_columns_layout"))
+                self.assertIs(window.settings_columns_layout.itemAt(0).widget(), window.ai_settings_group_box)
+                self.assertIs(window.settings_columns_layout.itemAt(1).widget(), window.search_settings_group_box)
                 self.assertEqual(window.settings_data_language_combo.itemText(0), "Not set")
                 self.assertTrue(window.ai_context_group_box.isAncestorOf(window.settings_context_column_names_checkbox))
                 self.assertTrue(window.search_settings_group_box.isAncestorOf(window.settings_search_timeout_edit))
@@ -321,8 +324,10 @@ class MainWindowTests(unittest.TestCase):
                 self.assertTrue(hasattr(window, "map_scope_label"))
                 self.assertEqual(window.map_scope_combo.itemText(0), "Visible on map")
                 self.assertEqual(window.map_scope_combo.itemData(0), "visible")
-                self.assertEqual(window.map_scope_combo.itemText(1), "Show all")
-                self.assertEqual(window.map_scope_combo.itemData(1), "all")
+                self.assertEqual(window.map_scope_combo.itemText(1), "Checked working set")
+                self.assertEqual(window.map_scope_combo.itemData(1), "checked")
+                self.assertEqual(window.map_scope_combo.itemText(2), "Show all")
+                self.assertEqual(window.map_scope_combo.itemData(2), "all")
                 self.assertEqual(window._map_scope(), "visible")
                 self.assertIs(window.map_controls_layout.itemAt(0).widget(), window.refresh_map_button)
                 self.assertIs(window.map_controls_layout.itemAt(2).widget(), window.map_scope_label)
@@ -758,22 +763,26 @@ class MainWindowTests(unittest.TestCase):
                 self.assertEqual(window.about_header_label.text(), "GRASP")
                 self.assertIn("stands for", window.about_acronym_label.text())
                 self.assertIn(APP_TAGLINE, window.about_acronym_label.text())
-                self.assertEqual(window.about_tagline_label.text(), APP_TAGLINE)
+                self.assertIn(APP_TAGLINE, window.about_tagline_label.text())
+                self.assertIn("front end of geospatial work", window.about_tagline_label.text())
                 self.assertIn(APP_AUTHOR, window.about_author_label.text())
                 self.assertEqual(window.about_illustration_path, ABOUT_ILLUSTRATION_PATH)
                 self.assertEqual(window.about_icon_path, APP_ICON_PATH)
                 self.assertTrue(window.about_illustration_path.exists())
                 self.assertTrue(window.about_icon_path.exists())
                 self.assertIn("Why I made it:", window.about_purpose_label.text())
-                self.assertIn("unified store", window.about_purpose_label.text())
-                self.assertIn("Shapefile, GeoPackage and GeoParquet", window.about_purpose_label.text())
+                self.assertIn("different sources, projects, and file types", window.about_purpose_label.text())
+                self.assertIn("In practical terms", window.about_mission_label.text())
                 self.assertIn("exports a packaged GeoPackage", window.about_capabilities_label.text())
-                self.assertIn("help fill gaps", window.about_note_label.text())
-                self.assertIn("miss details", window.about_note_label.text())
+                self.assertIn("turn them into a more usable, unified dataset package", window.about_capabilities_label.text())
+                self.assertIn("speed, repeatability, and AI support", window.about_note_label.text())
+                self.assertIn("not replace review", window.about_note_label.text())
                 self.assertIn(APP_LINKEDIN_URL, window.about_links_label.text())
                 self.assertIn(APP_REPOSITORY_URL, window.about_links_label.text())
                 self.assertTrue(window.about_links_label.openExternalLinks())
                 self.assertEqual(window.about_illustration_label.objectName(), "AboutIllustration")
+                self.assertTrue(window.about_body_host.layout() is window.about_body_layout)
+                self.assertTrue(window.about_text_panel.isAncestorOf(window.about_purpose_label))
             finally:
                 window.close()
 
@@ -1219,6 +1228,33 @@ class MainWindowTests(unittest.TestCase):
                     self.assertIn("scope:visible", calls)
                     self.assertNotIn("publish", calls)
                     self.assertTrue(window._map_refresh_pending)
+            finally:
+                window.close()
+
+    def test_refresh_map_checked_scope_uses_checked_working_set_count(self) -> None:
+        with patch("grasp.ui.main_window.WEBENGINE_AVAILABLE", False):
+            window = MainWindow()
+            try:
+                with tempfile.TemporaryDirectory() as tmp:
+                    window._set_workspace(tmp)
+                    window.repository.replace_datasets(
+                        [
+                            DatasetRecord(dataset_id="a", source_path="D:/data/a.geojson", source_format="geojson", visibility=True, cache_path="a.parquet"),
+                            DatasetRecord(dataset_id="b", source_path="D:/data/b.geojson", source_format="geojson", visibility=True, cache_path="b.parquet"),
+                            DatasetRecord(dataset_id="c", source_path="D:/data/c.geojson", source_format="geojson", visibility=False, cache_path="c.parquet"),
+                        ]
+                    )
+                    window.refresh_all_views()
+                    first_group = window.tree.topLevelItem(0)
+                    first_group.child(0).setCheckState(0, Qt.Checked)
+                    checked_scope_index = window.map_scope_combo.findData("checked")
+                    self.assertGreaterEqual(checked_scope_index, 0)
+                    window.map_scope_combo.setCurrentIndex(checked_scope_index)
+
+                    window.refresh_map()
+
+                    self.assertIn("Map layers in current scope (Checked working set): 1 of 3", window.map_summary.text())
+                    self.assertIn("Checked working set: 1", window.map_summary.text())
             finally:
                 window.close()
 
@@ -1876,7 +1912,7 @@ class MainWindowTests(unittest.TestCase):
                     self.assertFalse(window.repository.get_dataset("b").visibility)
                     self.assertFalse(window.repository.get_dataset("a").include_in_export)
                     self.assertFalse(window.repository.get_dataset("b").include_in_export)
-                    self.assertEqual(window._map_scope(), "visible")
+                    self.assertEqual(window._map_scope(), "checked")
             finally:
                 window.close()
 
@@ -2526,6 +2562,53 @@ class MainWindowTests(unittest.TestCase):
             finally:
                 window.close()
 
+    def test_regroup_with_hard_retry_ceiling_does_not_escalate_beyond_user_choice(self) -> None:
+        with patch("grasp.ui.main_window.WEBENGINE_AVAILABLE", False):
+            window = MainWindow()
+            try:
+                with tempfile.TemporaryDirectory() as tmp:
+                    window._set_workspace(tmp)
+                    window.repository.replace_datasets(
+                        [
+                            DatasetRecord(dataset_id="a", source_path="D:/data/a.geojson", source_format="geojson", layer_name="Risco de inundacao alto", cache_path="a.parquet"),
+                            DatasetRecord(dataset_id="b", source_path="D:/data/b.geojson", source_format="geojson", layer_name="Reserva Especial", cache_path="b.parquet"),
+                            DatasetRecord(dataset_id="c", source_path="D:/data/c.geojson", source_format="geojson", layer_name="Distritos", cache_path="c.parquet"),
+                            DatasetRecord(dataset_id="d", source_path="D:/data/d.geojson", source_format="geojson", layer_name="Rede viaria", cache_path="d.parquet"),
+                        ]
+                    )
+                    calls: list[int] = []
+
+                    def _group_datasets(datasets, target_group_count, timeout_s=None, group_count_bounds=None):
+                        calls.append(int(target_group_count))
+                        return {dataset.dataset_id: f"Group {index}" for index, dataset in enumerate(datasets, start=1)}
+
+                    window.intelligence_service = SimpleNamespace(
+                        classifier=HeuristicClassificationProvider(),
+                        group_datasets=_group_datasets,
+                    )
+                    messages: list[str] = []
+
+                    assignments = window._group_datasets_for_regroup(
+                        [window.repository.get_dataset(dataset_id) for dataset_id in ["a", "b", "c", "d"]],
+                        4,
+                        regroup_policy={
+                            "variance_prompt_enabled": False,
+                            "max_attempt_count": 1,
+                            "hard_max_target_group_count": 4,
+                            "group_count_bounds": (4, 4),
+                        },
+                        status_callback=messages.append,
+                        timeout_s=60.0,
+                    )
+
+                    self.assertEqual(calls, [4])
+                    self.assertEqual(len(set(assignments.values())), 4)
+                    self.assertFalse(
+                        any("Retrying with suggested target" in message for message in messages)
+                    )
+            finally:
+                window.close()
+
     def test_complete_regroup_preview_applies_assignments_after_confirmation(self) -> None:
         with patch("grasp.ui.main_window.WEBENGINE_AVAILABLE", False):
             window = MainWindow()
@@ -2574,16 +2657,21 @@ class MainWindowTests(unittest.TestCase):
                         return_value={
                             "action": "retry",
                             "target_group_count": 68,
+                            "regroup_policy": {
+                                "variance_prompt_enabled": False,
+                                "max_attempt_count": 1,
+                            },
                             "message": "Retrying with the higher AI-suggested target of 68 groups.",
                         },
                     ), patch.object(
                         window,
                         "_start_regroup_preview_job",
-                        side_effect=lambda dataset_ids, target_group_count, *, scope_label: captured.update(
+                        side_effect=lambda dataset_ids, target_group_count, *, scope_label, regroup_policy=None: captured.update(
                             {
                                 "dataset_ids": dataset_ids,
                                 "target_group_count": target_group_count,
                                 "scope_label": scope_label,
+                                "regroup_policy": regroup_policy,
                             }
                         ),
                     ), patch.object(window, "_confirm_regroup_assignments", side_effect=AssertionError("Should not confirm before retry")):
@@ -2603,8 +2691,50 @@ class MainWindowTests(unittest.TestCase):
                             "dataset_ids": [f"ds-{index}" for index in range(1, 69)],
                             "target_group_count": 68,
                             "scope_label": "checked datasets",
+                            "regroup_policy": {
+                                "variance_prompt_enabled": False,
+                                "max_attempt_count": 1,
+                            },
                         },
                     )
+                    self.assertFalse(window._review_job_running)
+            finally:
+                window.close()
+
+    def test_complete_regroup_preview_skips_second_variance_prompt_after_locked_retry_choice(self) -> None:
+        with patch("grasp.ui.main_window.WEBENGINE_AVAILABLE", False):
+            window = MainWindow()
+            try:
+                with tempfile.TemporaryDirectory() as tmp:
+                    window._set_workspace(tmp)
+                    window.repository.replace_datasets(
+                        [
+                            DatasetRecord(dataset_id="a", source_path="D:/data/a.geojson", source_format="geojson", group_id="ungrouped", cache_path="a.parquet"),
+                        ]
+                    )
+                    token = window._begin_background_activity("Regrouping checked datasets...", activity="AI Regroup")
+                    window._review_job_running = True
+
+                    with patch.object(
+                        window,
+                        "_resolve_regroup_group_count_variance",
+                        side_effect=AssertionError("Locked rerun should not prompt again"),
+                    ), patch.object(window, "_confirm_regroup_assignments", return_value=True):
+                        window._complete_regroup_preview(
+                            token,
+                            {
+                                "assignments": {"a": "Administrative"},
+                                "dataset_ids": ["a"],
+                                "target_group_count": 40,
+                                "regroup_policy": {
+                                    "variance_prompt_enabled": False,
+                                    "max_attempt_count": 1,
+                                },
+                            },
+                            "checked datasets",
+                        )
+
+                    self.assertEqual(window.repository.get_dataset("a").group_id, "administrative")
                     self.assertFalse(window._review_job_running)
             finally:
                 window.close()

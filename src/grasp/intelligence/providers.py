@@ -301,6 +301,7 @@ class HeuristicClassificationProvider(ClassificationProvider):
         target_group_count: int,
         *,
         timeout_s: float | None = None,
+        group_count_bounds: tuple[int, int] | None = None,
     ) -> dict[str, str]:
         if not datasets:
             return {}
@@ -884,16 +885,30 @@ class OpenAIClassificationProvider(ClassificationProvider, CandidateRanker):
         target_group_count: int,
         *,
         timeout_s: float | None = None,
+        group_count_bounds: tuple[int, int] | None = None,
     ) -> dict[str, str]:
         fallback_grouper = getattr(self.fallback, "group_datasets", None)
-        fallback = fallback_grouper(datasets, target_group_count, timeout_s=timeout_s) if callable(fallback_grouper) else {}
+        fallback = (
+            fallback_grouper(
+                datasets,
+                target_group_count,
+                timeout_s=timeout_s,
+                group_count_bounds=group_count_bounds,
+            )
+            if callable(fallback_grouper)
+            else {}
+        )
         if not self._can_use_remote() or len(datasets) <= 1:
             return fallback
         target = max(1, min(int(target_group_count or 1), len(datasets)))
         average_group_size = len(datasets) / max(1, target)
         soft_max_group_size = max(5, int(math.ceil(average_group_size * 2.0)))
-        minimum_group_count = max(1, min(len(datasets), int(math.ceil(target * 0.9))))
-        maximum_group_count = max(minimum_group_count, min(len(datasets), int(math.floor(target * 1.1))))
+        if group_count_bounds is None:
+            minimum_group_count = max(1, min(len(datasets), int(math.ceil(target * 0.9))))
+            maximum_group_count = max(minimum_group_count, min(len(datasets), int(math.floor(target * 1.1))))
+        else:
+            minimum_group_count = max(1, min(len(datasets), int(group_count_bounds[0])))
+            maximum_group_count = max(minimum_group_count, min(len(datasets), int(group_count_bounds[1])))
         heuristic_profiles = {
             dataset.dataset_id: self.fallback.classify(dataset)
             for dataset in datasets
