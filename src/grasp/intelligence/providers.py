@@ -10,6 +10,7 @@ from urllib.parse import quote, urlparse
 
 import requests
 
+from grasp.data_languages import display_managed_data_language, normalize_managed_data_language
 from grasp.models import DatasetRecord, DatasetUnderstanding, SourceCandidate
 
 DEFAULT_OPENAI_MODEL = "gpt-4o-mini"
@@ -689,6 +690,7 @@ class OpenAIClassificationProvider(ClassificationProvider, CandidateRanker):
         api_key: str | None = None,
         model: str | None = None,
         endpoint: str | None = None,
+        managed_data_language: str = "",
         fallback: ClassificationProvider | None = None,
         session: requests.Session | None = None,
         timeout_s: float | None = None,
@@ -704,6 +706,7 @@ class OpenAIClassificationProvider(ClassificationProvider, CandidateRanker):
         self.api_key = api_key or os.environ.get("OPENAI_API_KEY", "").strip()
         self.model = model or os.environ.get("OPENAI_MODEL", DEFAULT_OPENAI_MODEL)
         self.endpoint = endpoint or os.environ.get("OPENAI_ENDPOINT", DEFAULT_OPENAI_ENDPOINT)
+        self.managed_data_language = normalize_managed_data_language(managed_data_language)
         self.fallback = fallback or HeuristicClassificationProvider()
         self.session = session or requests.Session()
         self.timeout_s = float(timeout_s or os.environ.get("OPENAI_TIMEOUT_S", DEFAULT_OPENAI_TIMEOUT_S))
@@ -1015,6 +1018,24 @@ class OpenAIClassificationProvider(ClassificationProvider, CandidateRanker):
             return False
         return True
 
+    def _language_context_instruction(self) -> str:
+        if self.managed_data_language:
+            language = display_managed_data_language(self.managed_data_language)
+            return (
+                f"Managed data language context: {language}. "
+                f"Assume dataset names, descriptions, metadata values, and search snippets are primarily in {language} "
+                "unless the supplied clues clearly indicate otherwise. "
+                "Use that language context early when interpreting terms."
+            )
+        return (
+            "Managed data language context: not set. "
+            "Infer the likely language from the supplied clues before interpreting names, descriptions, metadata values, "
+            "search snippets, or group labels."
+        )
+
+    def _with_language_context(self, system_prompt: str) -> str:
+        return f"{self._language_context_instruction()}\n\n{system_prompt}"
+
     def _chat(self, system_prompt: str, user_prompt: str, *, timeout_s: float | None = None) -> str:
         if not self._can_use_remote():
             return ""
@@ -1030,7 +1051,7 @@ class OpenAIClassificationProvider(ClassificationProvider, CandidateRanker):
                     "model": self.model,
                     "temperature": 0.2,
                     "messages": [
-                        {"role": "system", "content": system_prompt},
+                        {"role": "system", "content": self._with_language_context(system_prompt)},
                         {"role": "user", "content": user_prompt},
                     ],
                     "response_format": {"type": "json_object"},

@@ -11,7 +11,15 @@ from grasp.intelligence.providers import OpenAIClassificationProvider
 from grasp.intelligence.service import IntelligenceService
 from grasp.models import DatasetRecord, DatasetUnderstanding, SourceCandidate
 from grasp.qt_compat import QApplication, QAbstractItemView, QDialog, QGridLayout, QHBoxLayout, QLabel, QMessageBox, QPlainTextEdit, Qt, QVBoxLayout
-from grasp.ui.main_window import ABOUT_ILLUSTRATION_PATH, APP_ICON_PATH, MAP_HTTP_USER_AGENT, TAB_PAGE_MARGIN_PX, MainWindow
+from grasp.ui.main_window import (
+    ABOUT_ILLUSTRATION_PATH,
+    APP_ICON_PATH,
+    MANAGE_ACTION_BUTTON_HEIGHT_PX,
+    MANAGE_ACTION_BUTTON_WIDTH_PX,
+    MAP_HTTP_USER_AGENT,
+    TAB_PAGE_MARGIN_PX,
+    MainWindow,
+)
 
 
 class MainWindowTests(unittest.TestCase):
@@ -196,17 +204,19 @@ class MainWindowTests(unittest.TestCase):
                 self.assertEqual(window.hide_from_maps_button.text(), "Hide from maps")
                 self.assertEqual(window.include_in_report_button.text(), "Include in export")
                 self.assertEqual(window.exclude_from_report_button.text(), "Exclude from export")
-                self.assertEqual(window.fast_info_button.minimumHeight(), 34)
-                self.assertEqual(window.show_all_button.minimumHeight(), 34)
-                self.assertEqual(window.export_gpkg_button.minimumHeight(), 34)
-                self.assertEqual(window.show_all_button.minimumWidth(), 136)
-                self.assertEqual(window.hide_all_button.minimumWidth(), 136)
-                self.assertEqual(window.show_group_button.minimumWidth(), 136)
-                self.assertEqual(window.hide_group_button.minimumWidth(), 136)
-                self.assertEqual(window.show_all_button.maximumWidth(), 136)
-                self.assertEqual(window.hide_all_button.maximumWidth(), 136)
-                self.assertEqual(window.show_group_button.maximumWidth(), 136)
-                self.assertEqual(window.hide_group_button.maximumWidth(), 136)
+                self.assertEqual(window.fast_info_button.minimumHeight(), MANAGE_ACTION_BUTTON_HEIGHT_PX)
+                self.assertEqual(window.fast_info_button.minimumWidth(), MANAGE_ACTION_BUTTON_WIDTH_PX)
+                self.assertEqual(window.show_all_button.minimumHeight(), 30)
+                self.assertEqual(window.export_gpkg_button.minimumHeight(), MANAGE_ACTION_BUTTON_HEIGHT_PX)
+                self.assertEqual(window.export_gpkg_button.minimumWidth(), MANAGE_ACTION_BUTTON_WIDTH_PX)
+                self.assertEqual(window.show_all_button.minimumWidth(), 120)
+                self.assertEqual(window.hide_all_button.minimumWidth(), 120)
+                self.assertEqual(window.show_group_button.minimumWidth(), 120)
+                self.assertEqual(window.hide_group_button.minimumWidth(), 120)
+                self.assertEqual(window.show_all_button.maximumWidth(), 120)
+                self.assertEqual(window.hide_all_button.maximumWidth(), 120)
+                self.assertEqual(window.show_group_button.maximumWidth(), 120)
+                self.assertEqual(window.hide_group_button.maximumWidth(), 120)
                 self.assertEqual(window.selection_group_combo.maximumWidth(), 300)
                 self.assertEqual(window.transfer_ai_selected_button.maximumWidth(), 220)
                 self.assertEqual(window.save_dataset_button.maximumWidth(), 150)
@@ -225,13 +235,17 @@ class MainWindowTests(unittest.TestCase):
                 self.assertTrue(window.review_datasets_tab.isAncestorOf(window.dataset_nav_first_button))
                 self.assertEqual(window.review_dataset_splitter.orientation(), Qt.Horizontal)
                 self.assertFalse(window.review_dataset_splitter.childrenCollapsible())
+                self.assertEqual(window.review_dataset_splitter.handleWidth(), 12)
                 self.assertEqual(window.info_sources_splitter.orientation(), Qt.Horizontal)
                 self.assertFalse(window.info_sources_splitter.childrenCollapsible())
+                self.assertEqual(window.info_sources_splitter.handleWidth(), 12)
                 self.assertTrue(window.info_sources_tab.isAncestorOf(window.review_actions_group_box))
                 self.assertTrue(window.info_sources_tab.isAncestorOf(window.review_progress))
                 self.assertTrue(window.info_sources_tab.isAncestorOf(window.review_job_status))
                 self.assertTrue(window.info_sources_tab.isAncestorOf(window.export_gpkg_button))
+                self.assertTrue(window.info_sources_tab.isAncestorOf(window.generate_styles_button))
                 self.assertFalse(window.map_tab.isAncestorOf(window.export_gpkg_button))
+                self.assertFalse(window.map_tab.isAncestorOf(window.generate_styles_button))
                 self.assertTrue(window.info_sources_tab.isAncestorOf(window.selection_group_box))
                 self.assertIs(window.info_sources_tab.layout().itemAt(1).widget(), window.selection_group_box)
                 self.assertIs(window.info_sources_tab.layout().itemAt(2).widget(), window.info_sources_splitter)
@@ -260,6 +274,7 @@ class MainWindowTests(unittest.TestCase):
                 self.assertTrue(window.dataset_actions_group_box.isAncestorOf(window.make_visible_button))
                 self.assertTrue(window.dataset_actions_group_box.isAncestorOf(window.hide_from_maps_button))
                 self.assertTrue(window.dataset_actions_group_box.isAncestorOf(window.include_in_report_button))
+                self.assertTrue(window.dataset_actions_group_box.isAncestorOf(window.generate_styles_button))
                 self.assertTrue(window.dataset_actions_group_box.isAncestorOf(window.exclude_from_report_button))
                 self.assertTrue(window.dataset_actions_group_box.isAncestorOf(window.dataset_actions_help_label))
                 self.assertTrue(window.dataset_details_group_box.isAncestorOf(window.dataset_name_edit))
@@ -282,9 +297,12 @@ class MainWindowTests(unittest.TestCase):
                 self.assertTrue(hasattr(window, "settings_search_timeout_edit"))
                 self.assertTrue(hasattr(window, "settings_search_failures_edit"))
                 self.assertTrue(hasattr(window, "settings_search_candidates_edit"))
+                self.assertTrue(hasattr(window, "settings_data_language_combo"))
                 self.assertTrue(window.ai_settings_group_box.isAncestorOf(window.settings_model_combo))
+                self.assertTrue(window.ai_settings_group_box.isAncestorOf(window.settings_data_language_combo))
                 self.assertTrue(window.ai_settings_group_box.isAncestorOf(window.settings_timeout_edit))
                 self.assertTrue(window.ai_settings_group_box.isAncestorOf(window.ai_context_group_box))
+                self.assertEqual(window.settings_data_language_combo.itemText(0), "Not set")
                 self.assertTrue(window.ai_context_group_box.isAncestorOf(window.settings_context_column_names_checkbox))
                 self.assertTrue(window.search_settings_group_box.isAncestorOf(window.settings_search_timeout_edit))
                 self.assertTrue(window.search_settings_group_box.isAncestorOf(window.settings_search_candidates_edit))
@@ -344,7 +362,8 @@ class MainWindowTests(unittest.TestCase):
                 self.assertEqual(dataset_actions_layout.getItemPosition(dataset_actions_layout.indexOf(window.make_visible_button))[:2], (0, 1))
                 self.assertEqual(dataset_actions_layout.getItemPosition(dataset_actions_layout.indexOf(window.hide_from_maps_button))[:2], (1, 0))
                 self.assertEqual(dataset_actions_layout.getItemPosition(dataset_actions_layout.indexOf(window.include_in_report_button))[:2], (1, 1))
-                self.assertEqual(dataset_actions_layout.getItemPosition(dataset_actions_layout.indexOf(window.exclude_from_report_button))[:2], (2, 0))
+                self.assertEqual(dataset_actions_layout.getItemPosition(dataset_actions_layout.indexOf(window.generate_styles_button))[:2], (2, 0))
+                self.assertEqual(dataset_actions_layout.getItemPosition(dataset_actions_layout.indexOf(window.exclude_from_report_button))[:2], (2, 1))
                 self.assertEqual(dataset_actions_layout.getItemPosition(dataset_actions_layout.indexOf(window.export_gpkg_button))[:2], (3, 0))
             finally:
                 window.close()
@@ -453,6 +472,41 @@ class MainWindowTests(unittest.TestCase):
                     self.assertIn("Transport", [window.dataset_group_combo.itemText(index) for index in range(window.dataset_group_combo.count())])
                     row_index = window._dataset_browser_row_ids.index("b")
                     self.assertEqual(window.review_dataset_table.item(row_index, 1).text(), "Transport")
+            finally:
+                window.close()
+
+    def test_group_combos_sort_choices_alphabetically(self) -> None:
+        with patch("grasp.ui.main_window.WEBENGINE_AVAILABLE", False):
+            window = MainWindow()
+            try:
+                with tempfile.TemporaryDirectory() as tmp:
+                    window._set_workspace(tmp)
+                    window.repository.create_group("Zebra")
+                    window.repository.create_group("Alpha")
+                    window.repository.replace_datasets(
+                        [
+                            DatasetRecord(
+                                dataset_id="a",
+                                source_path="D:/data/a.geojson",
+                                source_format="geojson",
+                                group_id="ungrouped",
+                                cache_path="a.parquet",
+                            )
+                        ]
+                    )
+
+                    window.refresh_all_views()
+                    window._set_review_dataset_table_selection("a")
+
+                    selection_group_names = [
+                        window.selection_group_combo.itemText(index) for index in range(window.selection_group_combo.count())
+                    ]
+                    dataset_group_names = [
+                        window.dataset_group_combo.itemText(index) for index in range(window.dataset_group_combo.count())
+                    ]
+
+                    self.assertEqual(selection_group_names, ["Alpha", "Ungrouped", "Zebra"])
+                    self.assertEqual(dataset_group_names, ["Alpha", "Ungrouped", "Zebra"])
             finally:
                 window.close()
 
@@ -805,6 +859,24 @@ class MainWindowTests(unittest.TestCase):
 
                 self.assertGreater(wide_sizes[0], compact_sizes[0])
                 self.assertGreater(wide_sizes[1], compact_sizes[1])
+            finally:
+                window.close()
+
+    def test_manage_data_splitter_starts_at_even_widths(self) -> None:
+        with patch("grasp.ui.main_window.WEBENGINE_AVAILABLE", False):
+            window = MainWindow()
+            try:
+                window.resize(1200, 700)
+                window.show()
+                window.tabs.setCurrentWidget(window.info_sources_tab)
+                self.app.processEvents()
+
+                sizes = window.info_sources_splitter.sizes()
+
+                self.assertEqual(len(sizes), 2)
+                self.assertGreater(sizes[0], 0)
+                self.assertGreater(sizes[1], 0)
+                self.assertLessEqual(abs(sizes[0] - sizes[1]), 24)
             finally:
                 window.close()
 
@@ -1212,6 +1284,7 @@ class MainWindowTests(unittest.TestCase):
         with patch("grasp.ui.main_window.WEBENGINE_AVAILABLE", False):
             window = MainWindow()
             try:
+                window.current_settings.managed_data_language = "Portuguese"
                 window.current_settings.classification_include_sample_values = True
                 window.current_settings.classification_include_geometry_type = True
                 window.current_settings.search_timeout_s = 2.5
@@ -1221,12 +1294,29 @@ class MainWindowTests(unittest.TestCase):
                 window._rebuild_ai_services()
 
                 classifier = window.intelligence_service.classifier
+                self.assertEqual(classifier.managed_data_language, "Portuguese")
                 self.assertTrue(classifier.include_sample_values)
                 self.assertTrue(classifier.include_geometry_type)
                 provider = window.search_service.provider
                 self.assertEqual(provider.timeout_s, 2.5)
                 self.assertEqual(provider.max_consecutive_failures, 3)
                 self.assertEqual(provider.target_candidates, 9)
+            finally:
+                window.close()
+
+    def test_save_settings_persists_managed_data_language(self) -> None:
+        with patch("grasp.ui.main_window.WEBENGINE_AVAILABLE", False):
+            window = MainWindow()
+            try:
+                portuguese_index = window.settings_data_language_combo.findData("Portuguese")
+                self.assertGreaterEqual(portuguese_index, 0)
+
+                window.settings_data_language_combo.setCurrentIndex(portuguese_index)
+                window.save_settings()
+
+                self.assertEqual(window.current_settings.managed_data_language, "Portuguese")
+                self.assertEqual(window.intelligence_service.classifier.managed_data_language, "Portuguese")
+                self.assertIn("Data language: portuguese", window.settings_model_label.text())
             finally:
                 window.close()
 
@@ -1563,11 +1653,13 @@ class MainWindowTests(unittest.TestCase):
                                 source_format="geojson",
                                 source_style_summary="Possible source styling detected: QGIS QML style file (roads.qml).",
                                 source_style_items_json='[{"kind":"sidecar:qml","label":"QGIS QML style file (roads.qml)","path":"D:/data/roads.qml"}]',
-                                visibility=True,
                                 cache_path="styled.parquet",
                             )
                         ]
                     )
+                    window.refresh_all_views()
+                    group_item = window.tree.topLevelItem(0)
+                    group_item.child(0).setCheckState(0, Qt.Checked)
                     started = []
                     window._start_worker_with_refresh = lambda *args, **kwargs: started.append("started")
 
@@ -1592,11 +1684,13 @@ class MainWindowTests(unittest.TestCase):
                                 source_format="geojson",
                                 source_style_summary="Possible source styling detected: QGIS QML style file (roads.qml).",
                                 source_style_items_json='[{"kind":"sidecar:qml","label":"QGIS QML style file (roads.qml)","path":"D:/data/roads.qml"}]',
-                                visibility=True,
                                 cache_path="styled.parquet",
                             )
                         ]
                     )
+                    window.refresh_all_views()
+                    group_item = window.tree.topLevelItem(0)
+                    group_item.child(0).setCheckState(0, Qt.Checked)
                     started = []
                     window._start_worker_with_refresh = lambda *args, **kwargs: started.append("started")
 
@@ -1604,6 +1698,46 @@ class MainWindowTests(unittest.TestCase):
                         window.start_style_for_scope()
 
                     self.assertEqual(started, ["started"])
+            finally:
+                window.close()
+
+    def test_start_style_for_scope_uses_checked_working_set(self) -> None:
+        with patch("grasp.ui.main_window.WEBENGINE_AVAILABLE", False):
+            window = MainWindow()
+            try:
+                with tempfile.TemporaryDirectory() as tmp:
+                    window._set_workspace(tmp)
+                    window.repository.replace_datasets(
+                        [
+                            DatasetRecord(
+                                dataset_id="checked",
+                                source_path="D:/data/checked.geojson",
+                                source_format="geojson",
+                                visibility=False,
+                                cache_path="checked.parquet",
+                            ),
+                            DatasetRecord(
+                                dataset_id="visible",
+                                source_path="D:/data/visible.geojson",
+                                source_format="geojson",
+                                visibility=True,
+                                cache_path="visible.parquet",
+                            ),
+                        ]
+                    )
+                    window.refresh_all_views()
+                    group_item = window.tree.topLevelItem(0)
+                    group_item.child(0).setCheckState(0, Qt.Checked)
+
+                    captured: list[tuple[str, list[str]]] = []
+                    window._start_worker_with_refresh = (
+                        lambda fn, dataset_ids, success_message, **kwargs: captured.append((fn.__name__, dataset_ids))
+                    )
+
+                    with patch.object(window, "_confirm_style_generation_for_dataset_ids", return_value=True):
+                        window.start_style_for_scope()
+
+                    self.assertEqual(captured, [("_style_dataset_ids", ["checked"])])
             finally:
                 window.close()
 
@@ -2456,6 +2590,46 @@ class MainWindowTests(unittest.TestCase):
                     self.assertTrue(window.repository.get_dataset("a").visibility)
                     self.assertTrue(window.repository.get_dataset("b").visibility)
                     self.assertTrue(window.repository.get_dataset("c").visibility)
+            finally:
+                window.close()
+
+    def test_manage_data_summary_reports_checked_group_count(self) -> None:
+        with patch("grasp.ui.main_window.WEBENGINE_AVAILABLE", False):
+            window = MainWindow()
+            try:
+                with tempfile.TemporaryDirectory() as tmp:
+                    window._set_workspace(tmp)
+                    window.repository.create_group("Transport")
+                    window.repository.create_group("Hydro")
+                    window.repository.replace_datasets(
+                        [
+                            DatasetRecord(
+                                dataset_id="a",
+                                source_path="a",
+                                source_format="geojson",
+                                group_id="transport",
+                                cache_path="a.parquet",
+                            ),
+                            DatasetRecord(
+                                dataset_id="b",
+                                source_path="b",
+                                source_format="geojson",
+                                group_id="hydro",
+                                cache_path="b.parquet",
+                            ),
+                        ]
+                    )
+
+                    window.refresh_all_views()
+                    for index in range(window.tree.topLevelItemCount()):
+                        group_item = window.tree.topLevelItem(index)
+                        if group_item.childCount() > 0:
+                            group_item.child(0).setCheckState(0, Qt.Checked)
+
+                    self.assertIn(
+                        "Working set: 2 checked dataset(s), divided between 2 groups.",
+                        window.selection_scope_status_label.text(),
+                    )
             finally:
                 window.close()
 

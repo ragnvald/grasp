@@ -1,5 +1,10 @@
 ﻿from __future__ import annotations
 
+from grasp.data_languages import (
+    MANAGED_DATA_LANGUAGE_NOT_SET_LABEL,
+    MANAGED_DATA_LANGUAGE_OPTIONS,
+    normalize_managed_data_language,
+)
 from grasp.qt_compat import (
     QComboBox,
     QDialog,
@@ -30,7 +35,7 @@ class SettingsDialog(QDialog):
         layout = QVBoxLayout(self)
 
         intro = QLabel(
-            "Choose the default OpenAI model and API settings used when the app attempts AI understanding and candidate ranking."
+            "Choose the default OpenAI model, managed data language, and API settings used when the app attempts AI understanding and candidate ranking."
         )
         intro.setWordWrap(True)
         layout.addWidget(intro)
@@ -41,6 +46,14 @@ class SettingsDialog(QDialog):
         self.model_combo.addItems(MODEL_OPTIONS)
         self.model_combo.setCurrentText(settings.openai_model)
         form.addRow("OpenAI model", self.model_combo)
+
+        self.data_language_combo = QComboBox()
+        self.data_language_combo.addItem(MANAGED_DATA_LANGUAGE_NOT_SET_LABEL, "")
+        for language in MANAGED_DATA_LANGUAGE_OPTIONS:
+            self.data_language_combo.addItem(language, language)
+        data_language_index = self.data_language_combo.findData(normalize_managed_data_language(settings.managed_data_language))
+        self.data_language_combo.setCurrentIndex(max(data_language_index, 0))
+        form.addRow("Managed data language", self.data_language_combo)
 
         self.api_key_edit = QLineEdit(settings.openai_api_key)
         self.api_key_edit.setEchoMode(QLineEdit.Password)
@@ -70,6 +83,7 @@ class SettingsDialog(QDialog):
             openai_model=self.model_combo.currentText().strip() or MODEL_OPTIONS[0],
             openai_api_key=self.api_key_edit.text().strip(),
             openai_endpoint=self.endpoint_edit.text().strip(),
+            managed_data_language=normalize_managed_data_language(self.data_language_combo.currentData()),
             openai_timeout_s=timeout_s,
             openai_max_consecutive_failures=max(1, max_failures),
         )

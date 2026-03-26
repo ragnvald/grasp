@@ -5,7 +5,7 @@ import os
 QT_API = "PySide6"
 
 from PySide6.QtCore import QObject, QRunnable, QSettings, QThreadPool, Qt, QTimer, QUrl, Signal, Slot
-from PySide6.QtGui import QAction, QPixmap
+from PySide6.QtGui import QAction, QColor, QPainter, QPixmap
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -29,6 +29,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QSizePolicy,
     QSplitter,
+    QSplitterHandle,
     QStatusBar,
     QTabWidget,
     QTableWidget,

@@ -19,6 +19,12 @@ from grasp.branding import (
     DEFAULT_EXPORT_GPKG_NAME,
 )
 from grasp.catalog.repository import CatalogRepository
+from grasp.data_languages import (
+    MANAGED_DATA_LANGUAGE_NOT_SET_LABEL,
+    MANAGED_DATA_LANGUAGE_OPTIONS,
+    display_managed_data_language,
+    normalize_managed_data_language,
+)
 from grasp.export.service import ExportService
 from grasp.ingest.service import IngestService, MAX_AUTO_VISIBLE_DATASETS, MAX_AUTO_VISIBLE_FEATURES
 from grasp.intelligence.providers import (
@@ -35,6 +41,7 @@ from grasp.qt_compat import (
     QApplication,
     QAbstractItemView,
     QCheckBox,
+    QColor,
     QComboBox,
     QDialog,
     QDialogButtonBox,
@@ -49,12 +56,14 @@ from grasp.qt_compat import (
     QLineEdit,
     QMainWindow,
     QMessageBox,
+    QPainter,
     QPlainTextEdit,
     QPixmap,
     QProgressBar,
     QPushButton,
     QSizePolicy,
     QSplitter,
+    QSplitterHandle,
     QStatusBar,
     QTabWidget,
     QTableWidget,
@@ -100,6 +109,8 @@ APP_ICON_PATH = UI_ASSETS_DIR / "grasp_app_icon.svg"
 LOAD_ARCHIVE_LABEL = "Load data from folder"
 REBUILD_ARCHIVE_LABEL = "Rebuild archive"
 TAB_PAGE_MARGIN_PX = 6
+MANAGE_ACTION_BUTTON_WIDTH_PX = 216
+MANAGE_ACTION_BUTTON_HEIGHT_PX = 32
 
 
 class DatasetTreeWidget(QTreeWidget):
@@ -119,6 +130,40 @@ class SortableTableWidgetItem(QTableWidgetItem):
         if isinstance(other, SortableTableWidgetItem):
             return self._sort_value < other._sort_value
         return super().__lt__(other)
+
+
+class CanvasSplitterHandle(QSplitterHandle):
+    _background_color = QColor("#f3ecdf")
+    _shadow_color = QColor("#d0bc97")
+    _highlight_color = QColor("#fffaf0")
+
+    def paintEvent(self, event) -> None:  # type: ignore[override]
+        _ = event
+        painter = QPainter(self)
+        painter.fillRect(self.rect(), self._background_color)
+
+        if self.orientation() == Qt.Horizontal:
+            line_extent = max(36, min(72, self.height() // 6))
+            top = max(0, (self.height() - line_extent) // 2)
+            center_x = self.width() // 2
+            painter.fillRect(center_x - 1, top, 1, line_extent, self._shadow_color)
+            painter.fillRect(center_x + 1, top, 1, line_extent, self._highlight_color)
+            return
+
+        line_extent = max(36, min(72, self.width() // 6))
+        left = max(0, (self.width() - line_extent) // 2)
+        center_y = self.height() // 2
+        painter.fillRect(left, center_y - 1, line_extent, 1, self._shadow_color)
+        painter.fillRect(left, center_y + 1, line_extent, 1, self._highlight_color)
+
+
+class CanvasSplitter(QSplitter):
+    def __init__(self, orientation, parent=None) -> None:
+        super().__init__(orientation, parent)
+        self.setHandleWidth(12)
+
+    def createHandle(self) -> QSplitterHandle:  # type: ignore[override]
+        return CanvasSplitterHandle(self.orientation(), self)
 
 
 if QWebEnginePage is not None:
@@ -179,6 +224,7 @@ class MainWindow(QMainWindow):
         self._background_activity_started_at: float | None = None
         self._background_activity_worker_signal_at: float | None = None
         self._updating_review_dataset_splitter = False
+        self._info_sources_splitter_initialized = False
         self._background_heartbeat_timer = QTimer(self)
         self._background_heartbeat_timer.setInterval(15000)
         self._background_heartbeat_timer.timeout.connect(self._emit_background_activity_heartbeat)
@@ -374,7 +420,7 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(TAB_PAGE_MARGIN_PX, TAB_PAGE_MARGIN_PX, TAB_PAGE_MARGIN_PX, TAB_PAGE_MARGIN_PX)
         layout.setSpacing(8)
 
-        self.review_dataset_splitter = QSplitter(Qt.Horizontal)
+        self.review_dataset_splitter = CanvasSplitter(Qt.Horizontal)
         self.review_dataset_splitter.setChildrenCollapsible(False)
         layout.addWidget(self.review_dataset_splitter, 1)
 
@@ -548,7 +594,7 @@ class MainWindow(QMainWindow):
         selection_controls_layout.setSpacing(8)
 
         self.selection_group_combo = QComboBox()
-        self.selection_group_combo.setFixedHeight(34)
+        self.selection_group_combo.setFixedHeight(30)
         self.selection_group_combo.setMinimumWidth(240)
         self.selection_group_combo.setMaximumWidth(300)
         self.selection_group_combo.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
@@ -580,7 +626,7 @@ class MainWindow(QMainWindow):
         selection_layout.addWidget(self.selection_scope_status_label)
         layout.addWidget(self.selection_group_box)
 
-        self.info_sources_splitter = QSplitter(Qt.Horizontal)
+        self.info_sources_splitter = CanvasSplitter(Qt.Horizontal)
         self.info_sources_splitter.setChildrenCollapsible(False)
         layout.addWidget(self.info_sources_splitter, 1)
 
@@ -601,15 +647,15 @@ class MainWindow(QMainWindow):
         review_actions_layout = QGridLayout()
         self.fast_info_button = QPushButton("Find info (fast)")
         self.fast_info_button.clicked.connect(self.start_fast_info_for_scope)
-        review_actions_layout.addWidget(self.fast_info_button, 0, 0)
+        review_actions_layout.addWidget(self.fast_info_button, 0, 0, alignment=Qt.AlignCenter)
 
         self.run_ai_sources_button = QPushButton("Find info (AI)")
         self.run_ai_sources_button.clicked.connect(self.start_ai_for_scope)
-        review_actions_layout.addWidget(self.run_ai_sources_button, 0, 1)
+        review_actions_layout.addWidget(self.run_ai_sources_button, 0, 1, alignment=Qt.AlignCenter)
 
         self.find_sources_button = QPushButton("Find sources")
         self.find_sources_button.clicked.connect(self.start_sources_for_scope)
-        review_actions_layout.addWidget(self.find_sources_button, 1, 0, 1, 2)
+        review_actions_layout.addWidget(self.find_sources_button, 1, 0, 1, 2, alignment=Qt.AlignCenter)
         review_actions_layout.setColumnStretch(0, 1)
         review_actions_layout.setColumnStretch(1, 1)
         review_actions_box_layout.addLayout(review_actions_layout)
@@ -656,19 +702,19 @@ class MainWindow(QMainWindow):
         grouping_layout = QGridLayout(self.grouping_group_box)
         self.new_group_button = QPushButton("New Group")
         self.new_group_button.clicked.connect(self.create_group)
-        grouping_layout.addWidget(self.new_group_button, 0, 0)
+        grouping_layout.addWidget(self.new_group_button, 0, 0, alignment=Qt.AlignCenter)
 
         self.apply_group_button = QPushButton("Apply Suggested Group")
         self.apply_group_button.clicked.connect(self.apply_suggested_group)
-        grouping_layout.addWidget(self.apply_group_button, 0, 1)
+        grouping_layout.addWidget(self.apply_group_button, 0, 1, alignment=Qt.AlignCenter)
 
         self.regroup_button = QPushButton("AI Regroup...")
         self.regroup_button.clicked.connect(self.start_regroup_for_scope)
-        grouping_layout.addWidget(self.regroup_button, 1, 0)
+        grouping_layout.addWidget(self.regroup_button, 1, 0, alignment=Qt.AlignCenter)
 
         self.reset_groups_button = QPushButton("Reset Groups")
         self.reset_groups_button.clicked.connect(self.reset_groups_for_scope)
-        grouping_layout.addWidget(self.reset_groups_button, 1, 1)
+        grouping_layout.addWidget(self.reset_groups_button, 1, 1, alignment=Qt.AlignCenter)
         grouping_layout.setColumnStretch(0, 1)
         grouping_layout.setColumnStretch(1, 1)
         self.grouping_help_label = QLabel(
@@ -684,27 +730,31 @@ class MainWindow(QMainWindow):
         dataset_actions_layout = QGridLayout(self.dataset_actions_group_box)
         self.fill_ai_fields_button = QPushButton("Fill Empty Fields from AI")
         self.fill_ai_fields_button.clicked.connect(self.fill_checked_user_fields_from_ai)
-        dataset_actions_layout.addWidget(self.fill_ai_fields_button, 0, 0)
+        dataset_actions_layout.addWidget(self.fill_ai_fields_button, 0, 0, alignment=Qt.AlignCenter)
 
         self.make_visible_button = QPushButton("Make visible in maps")
         self.make_visible_button.clicked.connect(self.make_checked_visible_in_maps)
-        dataset_actions_layout.addWidget(self.make_visible_button, 0, 1)
+        dataset_actions_layout.addWidget(self.make_visible_button, 0, 1, alignment=Qt.AlignCenter)
 
         self.hide_from_maps_button = QPushButton("Hide from maps")
         self.hide_from_maps_button.clicked.connect(self.hide_checked_from_maps)
-        dataset_actions_layout.addWidget(self.hide_from_maps_button, 1, 0)
+        dataset_actions_layout.addWidget(self.hide_from_maps_button, 1, 0, alignment=Qt.AlignCenter)
 
         self.include_in_report_button = QPushButton("Include in export")
         self.include_in_report_button.clicked.connect(self.include_checked_in_report)
-        dataset_actions_layout.addWidget(self.include_in_report_button, 1, 1)
+        dataset_actions_layout.addWidget(self.include_in_report_button, 1, 1, alignment=Qt.AlignCenter)
+
+        self.generate_styles_button = QPushButton("Generate Styles")
+        self.generate_styles_button.clicked.connect(self.start_style_for_scope)
+        dataset_actions_layout.addWidget(self.generate_styles_button, 2, 0, alignment=Qt.AlignCenter)
 
         self.exclude_from_report_button = QPushButton("Exclude from export")
         self.exclude_from_report_button.clicked.connect(self.exclude_checked_from_report)
-        dataset_actions_layout.addWidget(self.exclude_from_report_button, 2, 0, 1, 2)
+        dataset_actions_layout.addWidget(self.exclude_from_report_button, 2, 1, alignment=Qt.AlignCenter)
 
         self.export_gpkg_button = QPushButton("Export GeoPackage")
         self.export_gpkg_button.clicked.connect(self.export_gpkg)
-        dataset_actions_layout.addWidget(self.export_gpkg_button, 3, 0, 1, 2)
+        dataset_actions_layout.addWidget(self.export_gpkg_button, 3, 0, 1, 2, alignment=Qt.AlignCenter)
         dataset_actions_layout.setColumnStretch(0, 1)
         dataset_actions_layout.setColumnStretch(1, 1)
         self.dataset_actions_help_label = QLabel(
@@ -716,8 +766,8 @@ class MainWindow(QMainWindow):
         batch_layout.addWidget(self.dataset_actions_group_box)
         batch_layout.addStretch(1)
         self.info_sources_splitter.addWidget(batch_host)
-        self.info_sources_splitter.setStretchFactor(0, 4)
-        self.info_sources_splitter.setStretchFactor(1, 3)
+        self.info_sources_splitter.setStretchFactor(0, 1)
+        self.info_sources_splitter.setStretchFactor(1, 1)
         self._configure_manage_data_buttons(
             [
                 self.fast_info_button,
@@ -735,6 +785,7 @@ class MainWindow(QMainWindow):
                 self.make_visible_button,
                 self.hide_from_maps_button,
                 self.include_in_report_button,
+                self.generate_styles_button,
                 self.exclude_from_report_button,
                 self.export_gpkg_button,
             ]
@@ -748,6 +799,7 @@ class MainWindow(QMainWindow):
             ]
         )
         self._populate_selection_group_combo()
+        QTimer.singleShot(0, self._sync_info_sources_splitter_sizes)
 
     def _build_datasets_overview_tab(self) -> None:
         layout = QVBoxLayout(self.datasets_overview_tab)
@@ -787,10 +839,6 @@ class MainWindow(QMainWindow):
         refresh_button = QPushButton("Refresh Map")
         refresh_button.clicked.connect(self.refresh_map)
         controls_layout.addWidget(refresh_button, 0, 0)
-
-        self.generate_styles_button = QPushButton("Generate Styles")
-        self.generate_styles_button.clicked.connect(self.start_style_for_scope)
-        controls_layout.addWidget(self.generate_styles_button, 0, 1)
 
         controls_layout.addWidget(QLabel("Scope"), 1, 0)
         self.map_scope_combo = QComboBox()
@@ -840,7 +888,10 @@ class MainWindow(QMainWindow):
 
         self.ai_settings_group_box = QGroupBox("AI Settings")
         ai_group_layout = QVBoxLayout(self.ai_settings_group_box)
-        ai_intro = QLabel("Settings used for manual OpenAI-based title, description, grouping, and source ranking.")
+        ai_intro = QLabel(
+            "Settings used for manual OpenAI-based title, description, grouping, and source ranking. "
+            "Set Managed data language when you know the catalog language; leave it as Not set when the model should infer that from the data."
+        )
         ai_intro.setWordWrap(True)
         ai_group_layout.addWidget(ai_intro)
 
@@ -849,6 +900,12 @@ class MainWindow(QMainWindow):
         self.settings_model_combo.setEditable(True)
         self.settings_model_combo.addItems(MODEL_OPTIONS)
         ai_form.addRow("OpenAI model", self.settings_model_combo)
+
+        self.settings_data_language_combo = QComboBox()
+        self.settings_data_language_combo.addItem(MANAGED_DATA_LANGUAGE_NOT_SET_LABEL, "")
+        for language in MANAGED_DATA_LANGUAGE_OPTIONS:
+            self.settings_data_language_combo.addItem(language, language)
+        ai_form.addRow("Managed data language", self.settings_data_language_combo)
 
         self.settings_api_key_edit = QLineEdit()
         self.settings_api_key_edit.setEchoMode(QLineEdit.Password)
@@ -869,7 +926,8 @@ class MainWindow(QMainWindow):
         ai_context_layout = QVBoxLayout(self.ai_context_group_box)
         ai_context_intro = QLabel(
             "Choose which dataset clues are sent to OpenAI during manual AI runs in Manage data. "
-            "Keep this lean to reduce token use. Search-based enrichment can add more evidence later."
+            "Keep this lean to reduce token use. Search-based enrichment can add more evidence later. "
+            "Set Managed data language above when you know the primary language of the catalog; leave it as Not set when the model should infer that itself."
         )
         ai_context_intro.setWordWrap(True)
         ai_context_layout.addWidget(ai_context_intro)
@@ -1185,6 +1243,7 @@ class MainWindow(QMainWindow):
             openai_model=self.settings_model_combo.currentText().strip() or MODEL_OPTIONS[0],
             openai_api_key=self.settings_api_key_edit.text().strip(),
             openai_endpoint=self.settings_endpoint_edit.text().strip(),
+            managed_data_language=normalize_managed_data_language(self.settings_data_language_combo.currentData()),
             openai_timeout_s=timeout_s,
             openai_max_consecutive_failures=max(1, max_failures),
             classification_include_source_name=self.settings_context_source_name_checkbox.isChecked(),
@@ -1411,12 +1470,12 @@ class MainWindow(QMainWindow):
         if self.repository is None:
             QMessageBox.information(self, "No project", "Load or scan a folder first.")
             return
-        dataset_ids = self._dataset_ids_for_scope(self._map_scope())
+        dataset_ids = self._checked_dataset_ids()
         if not dataset_ids:
             QMessageBox.information(
                 self,
                 "Choose datasets",
-                "Mark one or more datasets as Visible on map, or switch scope to Show all first.",
+                "Check one or more datasets in step 2 first. Generate Styles uses the current checked working set.",
             )
             return
         if not self._confirm_style_generation_for_dataset_ids(dataset_ids):
@@ -1896,6 +1955,9 @@ class MainWindow(QMainWindow):
             return ""
         return sanitize_group_id(str(self.selection_group_combo.currentData() or ""))
 
+    def _sorted_group_choices(self, groups: list[tuple[str, str]]) -> list[tuple[str, str]]:
+        return sorted(groups, key=lambda item: (item[1].casefold(), item[0]))
+
     def _populate_selection_group_combo(self, preferred_group_id: str | None = None) -> None:
         if not hasattr(self, "selection_group_combo"):
             return
@@ -1907,7 +1969,7 @@ class MainWindow(QMainWindow):
             if not has_repository:
                 self.selection_group_combo.setEnabled(False)
             else:
-                groups = self.repository.list_groups()
+                groups = self._sorted_group_choices(self.repository.list_groups())
                 for group_id, group_name in groups:
                     self.selection_group_combo.addItem(group_name, group_id)
                 target_group_id = sanitize_group_id(current_group_id or "ungrouped")
@@ -1927,23 +1989,33 @@ class MainWindow(QMainWindow):
         if self.repository is None:
             self.selection_scope_status_label.setText("No project loaded.")
             return
-        checked_count = len(self._checked_dataset_ids())
+        checked_dataset_ids = set(self._checked_dataset_ids())
+        checked_count = len(checked_dataset_ids)
+        checked_group_count = len(
+            {
+                sanitize_group_id(dataset.group_id or "ungrouped")
+                for dataset in self._datasets()
+                if dataset.dataset_id in checked_dataset_ids
+            }
+        )
+        group_label = "group" if checked_group_count == 1 else "groups"
         selected_group_id = self._selected_batch_group_id() or "ungrouped"
         group_dataset_count = len(self._dataset_ids_for_group_id(selected_group_id))
         self.selection_scope_status_label.setText(
-            f"Working set: {checked_count} checked dataset(s). "
+            f"Working set: {checked_count} checked dataset(s), divided between {checked_group_count} {group_label}. "
             f"Group shortcut target: {display_group_name(selected_group_id)} ({group_dataset_count} dataset(s))."
         )
 
     def _configure_manage_data_buttons(self, buttons: list[QPushButton]) -> None:
         for button in buttons:
-            button.setMinimumHeight(34)
-            button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+            button.setFixedHeight(MANAGE_ACTION_BUTTON_HEIGHT_PX)
+            button.setFixedWidth(MANAGE_ACTION_BUTTON_WIDTH_PX)
+            button.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
 
     def _configure_compact_manage_data_buttons(self, buttons: list[QPushButton]) -> None:
         for button in buttons:
-            button.setFixedHeight(34)
-            button.setFixedWidth(136)
+            button.setFixedHeight(30)
+            button.setFixedWidth(120)
             button.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
 
     def _group_check_state(self, dataset_ids: list[str]):
@@ -2111,11 +2183,11 @@ class MainWindow(QMainWindow):
         self.dataset_group_combo.clear()
         if self.repository is None:
             return
-        groups = self.repository.list_groups()
+        groups = list(self.repository.list_groups())
         normalized_group_id = sanitize_group_id(current_group_id or "ungrouped")
         if not any(group_id == normalized_group_id for group_id, _group_name in groups):
             groups.append((normalized_group_id, display_group_name(normalized_group_id)))
-            groups.sort(key=lambda item: item[1].lower())
+        groups = self._sorted_group_choices(groups)
         for group_id, group_name in groups:
             self.dataset_group_combo.addItem(group_name, group_id)
         selected_index = self.dataset_group_combo.findData(normalized_group_id)
@@ -2441,6 +2513,7 @@ class MainWindow(QMainWindow):
             api_key=self.current_settings.openai_api_key or None,
             model=self.current_settings.openai_model or DEFAULT_OPENAI_MODEL,
             endpoint=self.current_settings.openai_endpoint,
+            managed_data_language=self.current_settings.managed_data_language,
             fallback=HeuristicClassificationProvider(),
             timeout_s=self.current_settings.openai_timeout_s,
             max_consecutive_failures=self.current_settings.openai_max_consecutive_failures,
@@ -2464,6 +2537,7 @@ class MainWindow(QMainWindow):
 
     def _update_model_label(self) -> None:
         model = self.current_settings.openai_model or DEFAULT_OPENAI_MODEL
+        data_language = display_managed_data_language(self.current_settings.managed_data_language).lower()
         context_parts: list[str] = []
         if self.current_settings.classification_include_source_name:
             context_parts.append("file")
@@ -2482,6 +2556,7 @@ class MainWindow(QMainWindow):
         context_summary = ", ".join(context_parts) if context_parts else "none"
         self.settings_model_label.setText(
             f"Active AI model: {model} (default in code: {DEFAULT_OPENAI_MODEL}) | "
+            f"Data language: {data_language} | "
             f"Manual AI context: {context_summary} | "
             f"Live search timeout: {self.current_settings.search_timeout_s:g}s | "
             f"Search failover: {self.current_settings.search_max_consecutive_failures}"
@@ -2489,6 +2564,8 @@ class MainWindow(QMainWindow):
 
     def _apply_settings_to_form(self, settings: AppSettings) -> None:
         self.settings_model_combo.setCurrentText(settings.openai_model)
+        language_index = self.settings_data_language_combo.findData(normalize_managed_data_language(settings.managed_data_language))
+        self.settings_data_language_combo.setCurrentIndex(max(language_index, 0))
         self.settings_api_key_edit.setText(settings.openai_api_key)
         self.settings_endpoint_edit.setText(settings.openai_endpoint)
         self.settings_timeout_edit.setText(str(settings.openai_timeout_s))
@@ -2633,6 +2710,8 @@ class MainWindow(QMainWindow):
     def on_tab_changed(self, _index: int) -> None:
         if self.tabs.currentWidget() is self.review_datasets_tab:
             self._sync_review_dataset_splitter_sizes()
+        if self.tabs.currentWidget() is self.info_sources_tab:
+            self._sync_info_sources_splitter_sizes()
         if not self._is_map_tab_active():
             return
         self.refresh_map()
@@ -2646,6 +2725,8 @@ class MainWindow(QMainWindow):
         super().resizeEvent(event)
         if self.tabs.currentWidget() is self.review_datasets_tab:
             self._sync_review_dataset_splitter_sizes()
+        if self.tabs.currentWidget() is self.info_sources_tab:
+            self._sync_info_sources_splitter_sizes()
 
     def _sync_review_dataset_splitter_sizes(self) -> None:
         if self._updating_review_dataset_splitter or not hasattr(self, "review_dataset_splitter"):
@@ -2674,6 +2755,18 @@ class MainWindow(QMainWindow):
             self.review_dataset_splitter.setSizes([browser_width, details_width])
         finally:
             self._updating_review_dataset_splitter = False
+
+    def _sync_info_sources_splitter_sizes(self) -> None:
+        if self._info_sources_splitter_initialized or not hasattr(self, "info_sources_splitter"):
+            return
+        if self.info_sources_splitter.count() < 2:
+            return
+        available_width = self.info_sources_splitter.width() or self.info_sources_tab.width()
+        if available_width <= 0:
+            return
+        half_width = max(0, available_width // 2)
+        self.info_sources_splitter.setSizes([half_width, max(0, available_width - half_width)])
+        self._info_sources_splitter_initialized = True
 
     def _on_map_view_loaded(self, ok: bool) -> None:
         self._map_page_ready = bool(ok)
@@ -3642,9 +3735,6 @@ class MainWindow(QMainWindow):
             QProgressBar::chunk {
                 background-color: #b79b67;
                 border-radius: 4px;
-            }
-            QSplitter::handle {
-                background-color: #d9ccb6;
             }
             QStatusBar {
                 background-color: #eee4d2;

@@ -505,11 +505,56 @@ class IntelligenceTests(unittest.TestCase):
         self.assertIsNotNone(session.last_json)
         messages = session.last_json["messages"]
         system_prompt = messages[0]["content"]
+        self.assertTrue(system_prompt.startswith("Managed data language context: not set."))
         self.assertIn("Translate or interpret non-English titles", system_prompt)
         self.assertIn("group by subject matter, not by shared language", system_prompt)
         self.assertIn("suggested_group as a hint, not a hard constraint", system_prompt)
         self.assertIn("must not be grouped under Protected Area", system_prompt)
         self.assertIn("Risco de incandio e queimadas extremo", system_prompt)
+
+    def test_openai_classification_prompt_includes_managed_data_language_when_set(self) -> None:
+        session = _CapturingSession(
+            {
+                "choices": [
+                    {
+                        "message": {
+                            "content": json.dumps(
+                                {
+                                    "theme": "administrative",
+                                    "keywords": ["distritos"],
+                                    "place_names": [],
+                                    "suggested_title": "Distritos Administrativos",
+                                    "suggested_description": "Administrative district boundaries.",
+                                    "suggested_group": "administrative",
+                                    "search_queries": ["Distritos Administrativos"],
+                                    "confidence": 0.8,
+                                }
+                            )
+                        }
+                    }
+                ]
+            }
+        )
+        provider = OpenAIClassificationProvider(
+            api_key="test-key",
+            managed_data_language="Portuguese",
+            fallback=HeuristicClassificationProvider(),
+            session=session,
+        )
+
+        provider.classify(
+            DatasetRecord(
+                dataset_id="a",
+                source_path="D:/data/distritos.geojson",
+                source_format="geojson",
+                layer_name="Distritos Administrativos",
+            )
+        )
+
+        self.assertIsNotNone(session.last_json)
+        system_prompt = session.last_json["messages"][0]["content"]
+        self.assertTrue(system_prompt.startswith("Managed data language context: Portuguese."))
+        self.assertIn("Use that language context early when interpreting terms.", system_prompt)
 
     def test_openai_group_datasets_payload_includes_local_semantic_hints(self) -> None:
         session = _CapturingSession(

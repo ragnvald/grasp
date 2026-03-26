@@ -8,6 +8,7 @@ from grasp.branding import (
     LEGACY_SETTINGS_APP,
     LEGACY_SETTINGS_ORGANIZATION,
 )
+from grasp.data_languages import normalize_managed_data_language
 from grasp.intelligence.providers import (
     DEFAULT_CLASSIFICATION_INCLUDE_BBOX,
     DEFAULT_CLASSIFICATION_INCLUDE_COLUMN_NAMES,
@@ -32,6 +33,7 @@ class AppSettings:
     openai_model: str = DEFAULT_OPENAI_MODEL
     openai_api_key: str = ""
     openai_endpoint: str = DEFAULT_OPENAI_ENDPOINT
+    managed_data_language: str = ""
     openai_timeout_s: float = DEFAULT_OPENAI_TIMEOUT_S
     openai_max_consecutive_failures: int = DEFAULT_OPENAI_MAX_CONSECUTIVE_FAILURES
     classification_include_source_name: bool = DEFAULT_CLASSIFICATION_INCLUDE_SOURCE_NAME
@@ -60,6 +62,7 @@ class SettingsStore:
             openai_model=str(self._value("openai/model", DEFAULT_OPENAI_MODEL)),
             openai_api_key=str(self._value("openai/api_key", "")),
             openai_endpoint=str(self._value("openai/endpoint", DEFAULT_OPENAI_ENDPOINT)),
+            managed_data_language=normalize_managed_data_language(self._value("openai/managed_data_language", "")),
             openai_timeout_s=float(self._value("openai/timeout_s", DEFAULT_OPENAI_TIMEOUT_S)),
             openai_max_consecutive_failures=int(
                 self._value(
@@ -115,6 +118,7 @@ class SettingsStore:
         self._settings.setValue("openai/model", settings.openai_model.strip() or DEFAULT_OPENAI_MODEL)
         self._settings.setValue("openai/api_key", settings.openai_api_key.strip())
         self._settings.setValue("openai/endpoint", settings.openai_endpoint.strip() or DEFAULT_OPENAI_ENDPOINT)
+        self._settings.setValue("openai/managed_data_language", normalize_managed_data_language(settings.managed_data_language))
         self._settings.setValue("openai/timeout_s", float(settings.openai_timeout_s))
         self._settings.setValue(
             "openai/max_consecutive_failures",

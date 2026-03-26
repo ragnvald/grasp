@@ -4,6 +4,11 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from grasp.data_languages import (
+    MANAGED_DATA_LANGUAGE_NOT_SET_LABEL,
+    MANAGED_DATA_LANGUAGE_OPTIONS,
+    display_managed_data_language,
+)
 from grasp.qt_compat import QSettings
 from grasp.settings import AppSettings, SettingsStore
 
@@ -18,6 +23,7 @@ class SettingsStoreTests(unittest.TestCase):
             settings = AppSettings(
                 last_folder="D:/data/example",
                 openai_model="gpt-4o-mini",
+                managed_data_language="Portuguese",
                 classification_include_source_name=False,
                 classification_include_layer_name=True,
                 classification_include_column_names=True,
@@ -34,6 +40,7 @@ class SettingsStoreTests(unittest.TestCase):
             reloaded = SettingsStore(QSettings(str(ini_path), QSettings.IniFormat)).load()
             self.assertEqual(reloaded.last_folder, "D:/data/example")
             self.assertEqual(reloaded.openai_model, "gpt-4o-mini")
+            self.assertEqual(reloaded.managed_data_language, "Portuguese")
             self.assertFalse(reloaded.classification_include_source_name)
             self.assertTrue(reloaded.classification_include_sample_values)
             self.assertTrue(reloaded.classification_include_bbox)
@@ -58,6 +65,12 @@ class SettingsStoreTests(unittest.TestCase):
 
             self.assertEqual(loaded.openai_model, "gpt-4.1-mini")
             self.assertEqual(loaded.last_folder, "D:/legacy")
+            self.assertEqual(loaded.managed_data_language, "")
+
+    def test_managed_data_language_defaults_and_display_helpers(self) -> None:
+        self.assertEqual(display_managed_data_language(""), MANAGED_DATA_LANGUAGE_NOT_SET_LABEL)
+        self.assertEqual(display_managed_data_language("portuguese"), "Portuguese")
+        self.assertEqual(list(MANAGED_DATA_LANGUAGE_OPTIONS), sorted(MANAGED_DATA_LANGUAGE_OPTIONS, key=str.casefold))
 
 
 if __name__ == "__main__":
