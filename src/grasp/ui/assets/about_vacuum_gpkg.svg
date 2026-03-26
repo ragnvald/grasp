@@ -1,0 +1,86 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 260" role="img" aria-labelledby="title desc">
+  <title id="title">GRASP playful about illustration</title>
+  <desc id="desc">A vacuum nozzle gathers file cards and funnels them into a bag labeled GPKG.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#fff7ea"/>
+      <stop offset="100%" stop-color="#efe3cb"/>
+    </linearGradient>
+    <linearGradient id="bag" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#ffe29c"/>
+      <stop offset="100%" stop-color="#f4a746"/>
+    </linearGradient>
+    <linearGradient id="metal" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#7b8ba3"/>
+      <stop offset="100%" stop-color="#41536f"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="6" stdDeviation="6" flood-color="#9e8763" flood-opacity="0.24"/>
+    </filter>
+  </defs>
+
+  <rect width="640" height="260" rx="24" fill="url(#bg)"/>
+
+  <path d="M36 70c48-32 118-38 192-20 76 19 160 14 230-18 47-22 88-26 152-18" fill="none" stroke="#d7c3a3" stroke-width="4" stroke-linecap="round" opacity="0.55"/>
+  <path d="M44 188c58-20 116-18 178 7 70 29 138 28 208 5 54-17 102-17 162 4" fill="none" stroke="#ddccb0" stroke-width="3" stroke-linecap="round" opacity="0.55"/>
+  <path d="M292 52c10 8 16 20 18 34" fill="none" stroke="#d6bf99" stroke-width="3" stroke-linecap="round" opacity="0.7"/>
+  <path d="M274 62c8 6 12 14 14 24" fill="none" stroke="#d6bf99" stroke-width="3" stroke-linecap="round" opacity="0.55"/>
+
+  <g filter="url(#shadow)">
+    <path d="M58 158c0-30 24-54 54-54h42c32 0 59 17 74 45l-46 18c-8-13-21-21-36-21h-30c-18 0-32 14-32 32v4H58z" fill="#2e425d"/>
+    <path d="M216 150l62-26c11-5 24 1 28 13l7 19-86 35-19-24c-5-6-2-14 8-17z" fill="url(#metal)"/>
+    <path d="M275 137l34-14c7-3 15 0 18 8l5 13-41 17-7-19c-3-7 0-15 8-18z" fill="#9fb0c5"/>
+    <circle cx="83" cy="156" r="12" fill="#f4b34f"/>
+    <circle cx="179" cy="132" r="11" fill="#f4b34f"/>
+  </g>
+
+  <g opacity="0.9">
+    <path d="M314 140c20-18 42-26 63-26" fill="none" stroke="#8bb8e0" stroke-width="6" stroke-linecap="round" stroke-dasharray="2 14"/>
+    <path d="M320 162c29-12 62-14 96-8" fill="none" stroke="#f3b45a" stroke-width="5" stroke-linecap="round" stroke-dasharray="2 13"/>
+    <path d="M328 183c38-5 76 3 113 22" fill="none" stroke="#7cc4b8" stroke-width="5" stroke-linecap="round" stroke-dasharray="2 12"/>
+  </g>
+
+  <g transform="translate(320 88) rotate(-12)" filter="url(#shadow)">
+    <rect x="0" y="10" width="62" height="82" rx="10" fill="#ffffff" stroke="#7d95b2" stroke-width="3"/>
+    <path d="M44 10h8c5 0 10 4 10 10v8h-18c-5 0-9-4-9-9V10h9z" fill="#dfe8f4"/>
+    <circle cx="22" cy="38" r="10" fill="#8bb8e0"/>
+    <path d="M15 58c7-8 16-13 28-14" fill="none" stroke="#49698a" stroke-width="4" stroke-linecap="round"/>
+    <circle cx="42" cy="56" r="4" fill="#49698a"/>
+    <text x="12" y="78" font-size="14" font-family="Arial, sans-serif" fill="#49698a">SHP</text>
+  </g>
+
+  <g transform="translate(384 72) rotate(8)" filter="url(#shadow)">
+    <rect x="0" y="10" width="64" height="86" rx="10" fill="#ffffff" stroke="#d37d4a" stroke-width="3"/>
+    <path d="M46 10h8c5 0 10 4 10 10v8h-18c-5 0-9-4-9-9V10h9z" fill="#ffe7cf"/>
+    <path d="M17 38h30l-8 13 9 14H17l9-14z" fill="#f3b45a"/>
+    <circle cx="48" cy="72" r="8" fill="#d37d4a"/>
+    <text x="10" y="84" font-size="14" font-family="Arial, sans-serif" fill="#9c5631">GEO</text>
+  </g>
+
+  <g transform="translate(454 102) rotate(15)" filter="url(#shadow)">
+    <rect x="0" y="10" width="58" height="78" rx="10" fill="#ffffff" stroke="#4f9a8c" stroke-width="3"/>
+    <path d="M40 10h8c5 0 10 4 10 10v8H40c-5 0-9-4-9-9V10h9z" fill="#def4ef"/>
+    <rect x="14" y="36" width="30" height="10" rx="5" fill="#7cc4b8"/>
+    <rect x="14" y="52" width="24" height="10" rx="5" fill="#7cc4b8"/>
+    <rect x="14" y="68" width="18" height="10" rx="5" fill="#7cc4b8"/>
+    <text x="11" y="30" font-size="11" font-family="Arial, sans-serif" fill="#2e6d63">PQ</text>
+  </g>
+
+  <g filter="url(#shadow)">
+    <path d="M500 68h22v20h-22z" fill="#836a4a"/>
+    <path d="M470 84h82l18 18v82c0 31-25 56-56 56h-6c-31 0-56-25-56-56v-82z" fill="url(#bag)" stroke="#a96d22" stroke-width="4"/>
+    <path d="M470 84h82l12 12h-106z" fill="#ffd488"/>
+    <circle cx="515" cy="171" r="30" fill="#fff7de" stroke="#d1892d" stroke-width="4"/>
+    <text x="515" y="165" text-anchor="middle" font-size="20" font-weight="700" font-family="Arial, sans-serif" fill="#915816">GP</text>
+    <text x="515" y="184" text-anchor="middle" font-size="18" font-weight="700" font-family="Arial, sans-serif" fill="#915816">KG</text>
+    <path d="M453 128c32 2 59 13 84 34" fill="none" stroke="#f8f0d8" stroke-width="5" stroke-linecap="round" opacity="0.7"/>
+  </g>
+
+  <g fill="#f5c66a" opacity="0.95">
+    <circle cx="292" cy="118" r="4"/>
+    <circle cx="302" cy="98" r="3"/>
+    <circle cx="546" cy="120" r="4"/>
+    <circle cx="560" cy="136" r="3"/>
+    <path d="M286 198l4 10 10 4-10 4-4 10-4-10-10-4 10-4z"/>
+  </g>
+</svg>

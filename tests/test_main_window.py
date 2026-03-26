@@ -6,12 +6,12 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from grasp.branding import APP_AUTHOR, APP_TAGLINE, APP_WINDOW_TITLE
+from grasp.branding import APP_AUTHOR, APP_LINKEDIN_URL, APP_REPOSITORY_URL, APP_TAGLINE, APP_WINDOW_TITLE
 from grasp.intelligence.providers import OpenAIClassificationProvider
 from grasp.intelligence.service import IntelligenceService
 from grasp.models import DatasetRecord, DatasetUnderstanding, SourceCandidate
 from grasp.qt_compat import QApplication, QAbstractItemView, QDialog, QGridLayout, QLabel, QMessageBox, QPlainTextEdit, Qt
-from grasp.ui.main_window import MAP_HTTP_USER_AGENT, MainWindow
+from grasp.ui.main_window import ABOUT_ILLUSTRATION_PATH, APP_ICON_PATH, MAP_HTTP_USER_AGENT, MainWindow
 
 
 class MainWindowTests(unittest.TestCase):
@@ -141,7 +141,7 @@ class MainWindowTests(unittest.TestCase):
                     self.assertEqual(stored.description_user, "AI generated description")
                     self.assertEqual(window.dataset_name_edit.text(), "AI Roads")
                     self.assertEqual(window.dataset_description_edit.toPlainText(), "AI generated description")
-                    self.assertIn("Checked datasets are selected for batch actions in Review", window.review_visibility_note.text())
+                    self.assertIn("The checked set comes from the checkboxes in Datasets overview", window.review_visibility_note.text())
             finally:
                 window.close()
 
@@ -149,7 +149,10 @@ class MainWindowTests(unittest.TestCase):
         with patch("grasp.ui.main_window.WEBENGINE_AVAILABLE", False):
             window = MainWindow()
             try:
-                self.assertEqual([window.tabs.tabText(index) for index in range(window.tabs.count())], ["Import", "Review", "Map / Export", "Settings", "About"])
+                self.assertEqual(
+                    [window.tabs.tabText(index) for index in range(window.tabs.count())],
+                    ["Import", "Datasets overview", "Review datasets", "Info sources", "Map / Export", "Settings", "About"],
+                )
                 self.assertEqual(window.datasets_group_box.title(), "Datasets")
                 self.assertEqual(window.browse_button.text(), "Browse")
                 self.assertEqual(window.scan_button.text(), "Rebuild archive")
@@ -157,10 +160,10 @@ class MainWindowTests(unittest.TestCase):
                 self.assertEqual(window.reset_data_button.text(), "Reset All Data")
                 self.assertEqual(window.simplify_import_names_checkbox.text(), "Simplify long dataset names on import")
                 self.assertIn("Description", window.simplify_import_names_checkbox.toolTip())
-                self.assertEqual(window.review_actions_group_box.title(), "Info & Sources")
-                self.assertEqual(window.selection_group_box.title(), "Selection")
-                self.assertEqual(window.grouping_group_box.title(), "Grouping")
-                self.assertEqual(window.dataset_actions_group_box.title(), "Selection actions")
+                self.assertEqual(window.review_actions_group_box.title(), "1. Discover info and sources")
+                self.assertEqual(window.selection_group_box.title(), "2. Choose datasets for batch work")
+                self.assertEqual(window.grouping_group_box.title(), "3. Organize checked datasets")
+                self.assertEqual(window.dataset_actions_group_box.title(), "4. Apply batch changes")
                 self.assertEqual(window.dataset_details_group_box.title(), "Selected dataset")
                 self.assertEqual(window.ai_settings_group_box.title(), "AI Settings")
                 self.assertEqual(window.search_settings_group_box.title(), "Search Settings")
@@ -184,9 +187,29 @@ class MainWindowTests(unittest.TestCase):
                 self.assertEqual(window.exclude_from_report_button.text(), "Exclude from export")
                 self.assertEqual(window.transfer_ai_selected_button.maximumWidth(), 220)
                 self.assertEqual(window.save_dataset_button.maximumWidth(), 150)
-                self.assertIn("find info (fast) runs a local first-pass", window.review_actions_note.text().lower())
-                self.assertIn("find info (ai) updates ai title", window.review_actions_note.text().lower())
-                self.assertIn("group suggestion", window.review_actions_note.text().lower())
+                self.assertEqual(window.review_dataset_filter_edit.placeholderText(), "Filter datasets by name, group, format, geometry or source path")
+                self.assertEqual(window.dataset_nav_first_button.text(), "First")
+                self.assertEqual(window.dataset_nav_back_button.text(), "Back")
+                self.assertEqual(window.dataset_nav_next_button.text(), "Next")
+                self.assertEqual(window.dataset_nav_last_button.text(), "Last")
+                self.assertIn("use this page for batch enrichment work", window.info_sources_intro_label.text().lower())
+                self.assertIn("find info (fast): local first-pass", window.review_actions_note.text().lower())
+                self.assertIn("find info (ai): updates ai title", window.review_actions_note.text().lower())
+                self.assertIn("refreshes likely external sources only", window.review_actions_note.text().lower())
+                self.assertTrue(window.review_datasets_tab.isAncestorOf(window.review_dataset_filter_edit))
+                self.assertTrue(window.review_datasets_tab.isAncestorOf(window.review_dataset_table))
+                self.assertTrue(window.review_datasets_tab.isAncestorOf(window.dataset_details_group_box))
+                self.assertTrue(window.review_datasets_tab.isAncestorOf(window.dataset_nav_first_button))
+                self.assertEqual(window.review_dataset_splitter.orientation(), Qt.Horizontal)
+                self.assertFalse(window.review_dataset_splitter.childrenCollapsible())
+                self.assertEqual(window.info_sources_splitter.orientation(), Qt.Horizontal)
+                self.assertFalse(window.info_sources_splitter.childrenCollapsible())
+                self.assertTrue(window.info_sources_tab.isAncestorOf(window.review_actions_group_box))
+                self.assertTrue(window.info_sources_tab.isAncestorOf(window.review_progress))
+                self.assertTrue(window.info_sources_tab.isAncestorOf(window.review_job_status))
+                self.assertTrue(window.review_job_group_box.isAncestorOf(window.review_progress))
+                self.assertTrue(window.review_job_group_box.isAncestorOf(window.review_visibility_note))
+                self.assertTrue(window.datasets_overview_tab.isAncestorOf(window.datasets_group_box))
                 self.assertTrue(window.datasets_group_box.isAncestorOf(window.tree))
                 self.assertTrue(window.review_actions_group_box.isAncestorOf(window.run_ai_sources_button))
                 self.assertTrue(window.review_actions_group_box.isAncestorOf(window.fast_info_button))
@@ -197,20 +220,27 @@ class MainWindowTests(unittest.TestCase):
                 self.assertTrue(window.selection_group_box.isAncestorOf(window.hide_all_button))
                 self.assertTrue(window.selection_group_box.isAncestorOf(window.show_group_button))
                 self.assertTrue(window.selection_group_box.isAncestorOf(window.hide_group_button))
+                self.assertTrue(window.selection_group_box.isAncestorOf(window.selection_help_label))
                 self.assertTrue(window.grouping_group_box.isAncestorOf(window.new_group_button))
                 self.assertTrue(window.grouping_group_box.isAncestorOf(window.apply_group_button))
                 self.assertTrue(window.grouping_group_box.isAncestorOf(window.regroup_button))
                 self.assertTrue(window.grouping_group_box.isAncestorOf(window.reset_groups_button))
                 self.assertTrue(window.grouping_group_box.isAncestorOf(window.grouping_scope_combo))
+                self.assertTrue(window.grouping_group_box.isAncestorOf(window.grouping_help_label))
                 self.assertTrue(window.dataset_actions_group_box.isAncestorOf(window.fill_ai_fields_button))
                 self.assertTrue(window.dataset_actions_group_box.isAncestorOf(window.make_visible_button))
                 self.assertTrue(window.dataset_actions_group_box.isAncestorOf(window.hide_from_maps_button))
                 self.assertTrue(window.dataset_actions_group_box.isAncestorOf(window.include_in_report_button))
                 self.assertTrue(window.dataset_actions_group_box.isAncestorOf(window.exclude_from_report_button))
+                self.assertTrue(window.dataset_actions_group_box.isAncestorOf(window.dataset_actions_help_label))
                 self.assertTrue(window.dataset_details_group_box.isAncestorOf(window.dataset_name_edit))
                 self.assertTrue(window.dataset_details_group_box.isAncestorOf(window.source_style_label))
                 self.assertTrue(window.dataset_details_group_box.isAncestorOf(window.ai_description_box))
                 self.assertTrue(window.dataset_details_group_box.isAncestorOf(window.save_dataset_button))
+                self.assertEqual(window.review_dataset_table.editTriggers(), QAbstractItemView.NoEditTriggers)
+                self.assertEqual(window.review_dataset_table.selectionBehavior(), QAbstractItemView.SelectRows)
+                self.assertEqual(window.review_dataset_table.selectionMode(), QAbstractItemView.SingleSelection)
+                self.assertFalse(window.review_dataset_table.isSortingEnabled())
                 group_box_titles = [group_box.title() for group_box in window.findChildren(type(window.datasets_group_box))]
                 self.assertNotIn("Source Candidates", group_box_titles)
                 self.assertFalse(hasattr(window, "sources_table"))
@@ -281,6 +311,68 @@ class MainWindowTests(unittest.TestCase):
                 self.assertEqual(dataset_actions_layout.getItemPosition(dataset_actions_layout.indexOf(window.hide_from_maps_button))[:2], (1, 0))
                 self.assertEqual(dataset_actions_layout.getItemPosition(dataset_actions_layout.indexOf(window.include_in_report_button))[:2], (1, 1))
                 self.assertEqual(dataset_actions_layout.getItemPosition(dataset_actions_layout.indexOf(window.exclude_from_report_button))[:2], (2, 0))
+            finally:
+                window.close()
+
+    def test_review_dataset_browser_filters_and_navigates_selected_dataset(self) -> None:
+        with patch("grasp.ui.main_window.WEBENGINE_AVAILABLE", False):
+            window = MainWindow()
+            try:
+                with tempfile.TemporaryDirectory() as tmp:
+                    window._set_workspace(tmp)
+                    window.repository.replace_datasets(
+                        [
+                            DatasetRecord(
+                                dataset_id="alpha",
+                                source_path="D:/data/alpha.geojson",
+                                source_format="geojson",
+                                layer_name="Alpha",
+                                cache_path="alpha.parquet",
+                            ),
+                            DatasetRecord(
+                                dataset_id="bravo",
+                                source_path="D:/data/bravo.geojson",
+                                source_format="geojson",
+                                layer_name="Bravo",
+                                cache_path="bravo.parquet",
+                            ),
+                            DatasetRecord(
+                                dataset_id="charlie",
+                                source_path="D:/data/charlie.gpkg",
+                                source_format="gpkg",
+                                layer_name="Charlie",
+                                cache_path="charlie.parquet",
+                            ),
+                        ]
+                    )
+
+                    window.refresh_all_views()
+
+                    self.assertEqual(window.review_dataset_table.rowCount(), 3)
+
+                    window.review_dataset_table.selectRow(1)
+                    self.assertEqual(window.selected_dataset_id(), "bravo")
+                    self.assertEqual(window.dataset_name_edit.text(), "Bravo")
+
+                    window.select_next_review_dataset()
+                    self.assertEqual(window.selected_dataset_id(), "charlie")
+                    self.assertEqual(window.dataset_name_edit.text(), "Charlie")
+
+                    window.select_first_review_dataset()
+                    self.assertEqual(window.selected_dataset_id(), "alpha")
+                    self.assertEqual(window.dataset_name_edit.text(), "Alpha")
+
+                    window.select_last_review_dataset()
+                    self.assertEqual(window.selected_dataset_id(), "charlie")
+
+                    window.select_previous_review_dataset()
+                    self.assertEqual(window.selected_dataset_id(), "bravo")
+
+                    window.review_dataset_filter_edit.setText("gpkg")
+                    self.assertEqual(window.review_dataset_table.rowCount(), 1)
+                    self.assertEqual(window.review_dataset_table.item(0, 0).text(), "Charlie")
+                    self.assertEqual(window.review_dataset_table.item(0, 1).text(), "Ungrouped")
+                    self.assertEqual(window.review_dataset_table.item(0, 2).text(), "gpkg")
             finally:
                 window.close()
 
@@ -526,9 +618,20 @@ class MainWindowTests(unittest.TestCase):
                 self.assertIn(APP_TAGLINE, window.about_acronym_label.text())
                 self.assertEqual(window.about_tagline_label.text(), APP_TAGLINE)
                 self.assertIn(APP_AUTHOR, window.about_author_label.text())
+                self.assertEqual(window.about_illustration_path, ABOUT_ILLUSTRATION_PATH)
+                self.assertEqual(window.about_icon_path, APP_ICON_PATH)
+                self.assertTrue(window.about_illustration_path.exists())
+                self.assertTrue(window.about_icon_path.exists())
+                self.assertIn("Why I made it:", window.about_purpose_label.text())
+                self.assertIn("unified store", window.about_purpose_label.text())
                 self.assertIn("Shapefile, GeoPackage and GeoParquet", window.about_purpose_label.text())
                 self.assertIn("exports a packaged GeoPackage", window.about_capabilities_label.text())
-                self.assertIn("structured knowledge", window.about_note_label.text())
+                self.assertIn("help fill gaps", window.about_note_label.text())
+                self.assertIn("miss details", window.about_note_label.text())
+                self.assertIn(APP_LINKEDIN_URL, window.about_links_label.text())
+                self.assertIn(APP_REPOSITORY_URL, window.about_links_label.text())
+                self.assertTrue(window.about_links_label.openExternalLinks())
+                self.assertEqual(window.about_illustration_label.objectName(), "AboutIllustration")
             finally:
                 window.close()
 
@@ -606,6 +709,25 @@ class MainWindowTests(unittest.TestCase):
                 window.log_window.close()
                 window.close()
 
+    def test_review_dataset_splitter_tracks_window_width(self) -> None:
+        with patch("grasp.ui.main_window.WEBENGINE_AVAILABLE", False):
+            window = MainWindow()
+            try:
+                window.resize(900, 700)
+                window.show()
+                window.tabs.setCurrentWidget(window.review_datasets_tab)
+                self.app.processEvents()
+                compact_sizes = window.review_dataset_splitter.sizes()
+
+                window.resize(1400, 700)
+                self.app.processEvents()
+                wide_sizes = window.review_dataset_splitter.sizes()
+
+                self.assertGreater(wide_sizes[0], compact_sizes[0])
+                self.assertGreater(wide_sizes[1], compact_sizes[1])
+            finally:
+                window.close()
+
     def test_activity_log_is_written_to_data_out_log_txt(self) -> None:
         with patch("grasp.ui.main_window.WEBENGINE_AVAILABLE", False):
             window = MainWindow()
@@ -670,7 +792,7 @@ class MainWindowTests(unittest.TestCase):
 
                     self.assertEqual(captured, {})
                     self.assertIn(
-                        "1 new or changed dataset(s) are ready for Find info (fast) in Review.",
+                        "1 new or changed dataset(s) are ready for Find info (fast) in Info sources.",
                         window.log_text.toPlainText(),
                     )
             finally:
@@ -1807,7 +1929,7 @@ class MainWindowTests(unittest.TestCase):
                     self.assertIn("Administrative (2)", preview_box.toPlainText())
                     self.assertIn("Administrative Districts", preview_box.toPlainText())
                     self.assertIn("Capital Cities", preview_box.toPlainText())
-                    self.assertIn("drag datasets between groups in the left pane", question_label.text().lower())
+                    self.assertIn("drag datasets between groups in the datasets overview tab", question_label.text().lower())
 
                     with patch("grasp.ui.main_window.QDialog.exec", return_value=QDialog.Rejected):
                         accepted = window._confirm_regroup_assignments({"a": "Administrative", "b": "Administrative"})
@@ -1816,11 +1938,94 @@ class MainWindowTests(unittest.TestCase):
             finally:
                 window.close()
 
+    def test_regroup_preview_shows_all_groups_and_datasets_without_truncation(self) -> None:
+        with patch("grasp.ui.main_window.WEBENGINE_AVAILABLE", False):
+            window = MainWindow()
+            try:
+                with tempfile.TemporaryDirectory() as tmp:
+                    window._set_workspace(tmp)
+                    dataset_specs = [
+                        ("a1", "Admin One"),
+                        ("a2", "Admin Two"),
+                        ("a3", "Admin Three"),
+                        ("a4", "Admin Four"),
+                        ("a5", "Admin Five"),
+                        ("b1", "Boundary Layer"),
+                        ("c1", "City Layer"),
+                        ("d1", "River Layer"),
+                        ("e1", "Road Layer"),
+                        ("f1", "Land Use Layer"),
+                        ("g1", "Terrain Layer"),
+                        ("h1", "Building Layer"),
+                        ("i1", "Parcel Layer"),
+                    ]
+                    window.repository.replace_datasets(
+                        [
+                            DatasetRecord(
+                                dataset_id=dataset_id,
+                                source_path=f"D:/data/{dataset_id}.geojson",
+                                source_format="geojson",
+                                layer_name=layer_name,
+                                cache_path=f"{dataset_id}.parquet",
+                            )
+                            for dataset_id, layer_name in dataset_specs
+                        ]
+                    )
+
+                    assignments = {
+                        "a1": "Administrative",
+                        "a2": "Administrative",
+                        "a3": "Administrative",
+                        "a4": "Administrative",
+                        "a5": "Administrative",
+                        "b1": "Boundaries",
+                        "c1": "Cities",
+                        "d1": "Rivers",
+                        "e1": "Roads",
+                        "f1": "Land Use",
+                        "g1": "Terrain",
+                        "h1": "Buildings",
+                        "i1": "Parcels",
+                    }
+
+                    dialog = window._create_regroup_confirmation_dialog(assignments)
+                    self.assertIsNotNone(dialog)
+                    preview_box = dialog.findChild(QPlainTextEdit, "regroupPreviewBox")
+
+                    self.assertIsNotNone(preview_box)
+                    preview_text = preview_box.toPlainText()
+                    self.assertIn("Administrative (5)", preview_text)
+                    self.assertIn("Admin Five", preview_text)
+                    self.assertIn("Admin Four", preview_text)
+                    self.assertIn("Admin One", preview_text)
+                    self.assertIn("Admin Three", preview_text)
+                    self.assertIn("Admin Two", preview_text)
+                    self.assertIn("Boundaries (1)", preview_text)
+                    self.assertIn("Boundary Layer", preview_text)
+                    self.assertIn("Buildings (1)", preview_text)
+                    self.assertIn("Building Layer", preview_text)
+                    self.assertIn("Cities (1)", preview_text)
+                    self.assertIn("City Layer", preview_text)
+                    self.assertIn("Land Use (1)", preview_text)
+                    self.assertIn("Land Use Layer", preview_text)
+                    self.assertIn("Parcels (1)", preview_text)
+                    self.assertIn("Parcel Layer", preview_text)
+                    self.assertIn("Rivers (1)", preview_text)
+                    self.assertIn("River Layer", preview_text)
+                    self.assertIn("Roads (1)", preview_text)
+                    self.assertIn("Road Layer", preview_text)
+                    self.assertIn("Terrain (1)", preview_text)
+                    self.assertIn("Terrain Layer", preview_text)
+                    self.assertNotIn("more dataset(s)", preview_text)
+                    self.assertNotIn("more proposed group(s)", preview_text)
+            finally:
+                window.close()
+
     def test_review_tab_mentions_drag_and_drop_grouping(self) -> None:
         with patch("grasp.ui.main_window.WEBENGINE_AVAILABLE", False):
             window = MainWindow()
             try:
-                self.assertIn("Drag datasets between groups in the left pane", window.datasets_help_note.text())
+                self.assertIn("Drag datasets between groups in the overview below", window.datasets_help_note.text())
             finally:
                 window.close()
 

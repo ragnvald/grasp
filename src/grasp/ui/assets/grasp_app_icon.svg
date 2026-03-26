@@ -1,0 +1,37 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-labelledby="title desc">
+  <title id="title">GRASP app icon</title>
+  <desc id="desc">A simplified vacuum nozzle pulling files into a GPKG bag.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#fff4df"/>
+      <stop offset="100%" stop-color="#eedbb8"/>
+    </linearGradient>
+    <linearGradient id="bag" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#ffd87d"/>
+      <stop offset="100%" stop-color="#ed9f3f"/>
+    </linearGradient>
+    <linearGradient id="metal" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#7f91aa"/>
+      <stop offset="100%" stop-color="#3f536e"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="256" height="256" rx="48" fill="url(#bg)"/>
+  <path d="M26 92c24-18 50-28 77-28 29 0 52 9 69 28l-24 22c-10-10-24-15-42-15-16 0-31 5-45 16z" fill="#32465f"/>
+  <path d="M149 103l38-16c7-3 15 0 18 8l6 14-48 20-14-17c-4-4-2-8 0-9z" fill="url(#metal)"/>
+  <path d="M184 124c12-8 26-11 43-10" fill="none" stroke="#7cb9dd" stroke-width="8" stroke-linecap="round" stroke-dasharray="2 14"/>
+  <g transform="translate(118 78) rotate(-10)">
+    <rect x="0" y="0" width="34" height="44" rx="8" fill="#ffffff" stroke="#d37d4a" stroke-width="3"/>
+    <path d="M9 14h16l-4 7 4 7H9l4-7z" fill="#f3b45a"/>
+  </g>
+  <g transform="translate(97 118) rotate(8)">
+    <rect x="0" y="0" width="30" height="38" rx="8" fill="#ffffff" stroke="#4f9a8c" stroke-width="3"/>
+    <rect x="8" y="11" width="14" height="5" rx="2.5" fill="#7cc4b8"/>
+    <rect x="8" y="19" width="14" height="5" rx="2.5" fill="#7cc4b8"/>
+  </g>
+  <path d="M182 74h18v16h-18z" fill="#7d6848"/>
+  <path d="M168 88h54l14 14v53c0 23-19 42-42 42h-2c-23 0-42-19-42-42v-53z" fill="url(#bag)" stroke="#a96d22" stroke-width="4"/>
+  <circle cx="196" cy="143" r="24" fill="#fff7de" stroke="#d1892d" stroke-width="4"/>
+  <text x="196" y="137" text-anchor="middle" font-size="16" font-weight="700" font-family="Arial, sans-serif" fill="#915816">GP</text>
+  <text x="196" y="154" text-anchor="middle" font-size="15" font-weight="700" font-family="Arial, sans-serif" fill="#915816">KG</text>
+</svg>

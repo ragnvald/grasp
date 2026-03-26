@@ -11,11 +11,12 @@ from grasp.branding import (
     APP_ACRONYM,
     APP_AUTHOR,
     APP_DISPLAY_NAME,
+    APP_LINKEDIN_URL,
     APP_MISSION,
+    APP_REPOSITORY_URL,
     APP_TAGLINE,
     APP_WINDOW_TITLE,
     DEFAULT_EXPORT_GPKG_NAME,
-    DEFAULT_EXPORT_PARQUET_NAME,
 )
 from grasp.catalog.repository import CatalogRepository
 from grasp.export.service import ExportService
@@ -49,8 +50,10 @@ from grasp.qt_compat import (
     QMainWindow,
     QMessageBox,
     QPlainTextEdit,
+    QPixmap,
     QProgressBar,
     QPushButton,
+    QSizePolicy,
     QSplitter,
     QStatusBar,
     QTabWidget,
@@ -79,19 +82,20 @@ from grasp.ui.settings_dialog import MODEL_OPTIONS
 from grasp.ui.workers import FunctionWorker
 from grasp.settings import AppSettings, SettingsStore
 from grasp.styling import StyleService
-from grasp.workspace import catalog_exists, ensure_workspace, sanitize_group_id
+from grasp.workspace import catalog_exists, display_group_name, ensure_workspace, sanitize_group_id
 
 
 REGROUP_OTHERS_GROUP_NAME = "Others"
 REGROUP_HINT_PREPARATION_TIMEOUT_S = 120.0
 REGROUP_TOTAL_TIMEOUT_S = 120.0
-REGROUP_PREVIEW_GROUP_LIMIT = 8
-REGROUP_PREVIEW_DATASET_LIMIT = 4
 INITIAL_HEURISTIC_CLASSIFICATION_TIMEOUT_S = 60.0
 REVIEW_JOB_STALE_LOCK_TIMEOUT_S = 300.0
 REMOTE_AI_REQUEST_COOLDOWN_S = 0.35
 UNDERSTANDING_PERSIST_BATCH_SIZE = 24
-MAP_HTTP_USER_AGENT = "GRASP-Desktop (+https://github.com/ragnvald/grasp)"
+MAP_HTTP_USER_AGENT = f"GRASP-Desktop (+{APP_REPOSITORY_URL})"
+UI_ASSETS_DIR = Path(__file__).resolve().parent / "assets"
+ABOUT_ILLUSTRATION_PATH = UI_ASSETS_DIR / "about_vacuum_gpkg.svg"
+APP_ICON_PATH = UI_ASSETS_DIR / "grasp_app_icon.svg"
 # These labels reflect the current archive-oriented wording requested for the import flow.
 LOAD_ARCHIVE_LABEL = "Load data from folder"
 REBUILD_ARCHIVE_LABEL = "Rebuild archive"
@@ -164,6 +168,8 @@ class MainWindow(QMainWindow):
         self._map_page_ready = False
         self._map_refresh_pending = False
         self._review_job_running = False
+        self._syncing_dataset_selection = False
+        self._dataset_browser_row_ids: list[str] = []
         self._background_progress_token = 0
         self._active_background_progress_token = 0
         self._background_activity_names: dict[int, str] = {}
@@ -171,6 +177,7 @@ class MainWindow(QMainWindow):
         self._background_activity_progress_value: int | None = None
         self._background_activity_started_at: float | None = None
         self._background_activity_worker_signal_at: float | None = None
+        self._updating_review_dataset_splitter = False
         self._background_heartbeat_timer = QTimer(self)
         self._background_heartbeat_timer.setInterval(15000)
         self._background_heartbeat_timer.timeout.connect(self._emit_background_activity_heartbeat)
@@ -223,8 +230,12 @@ class MainWindow(QMainWindow):
 
         self.import_tab = QWidget()
         self.import_tab.setObjectName("ImportTab")
-        self.review_tab = QWidget()
-        self.review_tab.setObjectName("ReviewTab")
+        self.review_datasets_tab = QWidget()
+        self.review_datasets_tab.setObjectName("ReviewDatasetsTab")
+        self.info_sources_tab = QWidget()
+        self.info_sources_tab.setObjectName("InfoSourcesTab")
+        self.datasets_overview_tab = QWidget()
+        self.datasets_overview_tab.setObjectName("DatasetsOverviewTab")
         self.map_tab = QWidget()
         self.map_tab.setObjectName("MapTab")
         self.settings_tab = QWidget()
@@ -233,13 +244,17 @@ class MainWindow(QMainWindow):
         self.about_tab.setObjectName("AboutTab")
 
         self.tabs.addTab(self.import_tab, "Import")
-        self.tabs.addTab(self.review_tab, "Review")
+        self.tabs.addTab(self.datasets_overview_tab, "Datasets overview")
+        self.tabs.addTab(self.review_datasets_tab, "Review datasets")
+        self.tabs.addTab(self.info_sources_tab, "Info sources")
         self.tabs.addTab(self.map_tab, "Map / Export")
         self.tabs.addTab(self.settings_tab, "Settings")
         self.tabs.addTab(self.about_tab, "About")
 
         self._build_import_tab()
-        self._build_review_tab()
+        self._build_review_datasets_tab()
+        self._build_info_sources_tab()
+        self._build_datasets_overview_tab()
         self._build_map_tab()
         self._build_settings_tab()
         self._build_about_tab()
@@ -341,167 +356,58 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.import_log_note)
         self._update_folder_actions()
 
-    def _build_review_tab(self) -> None:
-        layout = QVBoxLayout(self.review_tab)
+    def _build_review_datasets_tab(self) -> None:
+        layout = QVBoxLayout(self.review_datasets_tab)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
 
-        self.review_actions_group_box = QGroupBox("Info & Sources")
-        review_actions_box_layout = QVBoxLayout(self.review_actions_group_box)
-        review_actions_layout = QHBoxLayout()
-        self.fast_info_button = QPushButton("Find info (fast)")
-        self.fast_info_button.clicked.connect(self.start_fast_info_for_scope)
-        review_actions_layout.addWidget(self.fast_info_button)
+        self.review_dataset_splitter = QSplitter(Qt.Horizontal)
+        self.review_dataset_splitter.setChildrenCollapsible(False)
+        layout.addWidget(self.review_dataset_splitter, 1)
 
-        self.run_ai_sources_button = QPushButton("Find info (AI)")
-        self.run_ai_sources_button.clicked.connect(self.start_ai_for_scope)
-        review_actions_layout.addWidget(self.run_ai_sources_button)
+        browser_host = QWidget()
+        browser_host.setMinimumWidth(180)
+        browser_host.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        browser_layout = QVBoxLayout(browser_host)
+        browser_layout.setContentsMargins(0, 0, 0, 0)
+        browser_layout.setSpacing(8)
 
-        self.find_sources_button = QPushButton("Find sources")
-        self.find_sources_button.clicked.connect(self.start_sources_for_scope)
-        review_actions_layout.addWidget(self.find_sources_button)
+        self.review_dataset_filter_edit = QLineEdit()
+        self.review_dataset_filter_edit.setPlaceholderText("Filter datasets by name, group, format, geometry or source path")
+        self.review_dataset_filter_edit.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.review_dataset_filter_edit.textChanged.connect(self.refresh_dataset_browser_table)
+        browser_layout.addWidget(self.review_dataset_filter_edit)
 
-        review_actions_layout.addWidget(QLabel("Scope"))
-        self.review_scope_combo = QComboBox()
-        self.review_scope_combo.addItem("Checked datasets", "checked")
-        self.review_scope_combo.addItem("All datasets", "all")
-        review_actions_layout.addWidget(self.review_scope_combo)
-        review_actions_layout.addStretch(1)
-        review_actions_box_layout.addLayout(review_actions_layout)
+        self.review_dataset_table = QTableWidget(0, 3)
+        self.review_dataset_table.setHorizontalHeaderLabels(["Dataset", "Group", "Format"])
+        self.review_dataset_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.review_dataset_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.review_dataset_table.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.review_dataset_table.setSortingEnabled(False)
+        self.review_dataset_table.verticalHeader().setVisible(False)
+        self.review_dataset_table.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.review_dataset_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
+        self.review_dataset_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        self.review_dataset_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeToContents)
+        self.review_dataset_table.itemSelectionChanged.connect(self.on_review_dataset_selection_changed)
+        browser_layout.addWidget(self.review_dataset_table, 1)
 
-        self.review_actions_note = QLabel(
-            "Find info (fast) runs a local first-pass without external AI. "
-            "Find info (AI) updates AI title, AI description and an AI group suggestion only. "
-            "Find sources keeps the current understanding and refreshes source lookup only."
+        self.review_dataset_list_note = QLabel(
+            "This browser lists all datasets without batch-selection checkboxes. Use the filter above to narrow the list."
         )
-        self.review_actions_note.setWordWrap(True)
-        review_actions_box_layout.addWidget(self.review_actions_note)
+        self.review_dataset_list_note.setWordWrap(True)
+        self.review_dataset_list_note.setMinimumWidth(0)
+        self.review_dataset_list_note.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        browser_layout.addWidget(self.review_dataset_list_note)
 
-        self.review_job_status = QLabel("No dataset processing job running.")
-        self.review_job_status.setWordWrap(True)
-        layout.addWidget(self.review_job_status)
+        self.review_dataset_splitter.addWidget(browser_host)
 
-        self.review_visibility_note = QLabel(
-            "Checked datasets are selected for batch actions in Review. "
-            "Visible on map is controlled separately in the dataset panel on the right. On import, the app auto-enables map visibility for up to "
-            f"{MAX_AUTO_VISIBLE_DATASETS} smaller layers (max {MAX_AUTO_VISIBLE_FEATURES} features each) "
-            "and leaves the rest off to keep the map responsive. "
-            "Use Select/Clear All or Select/Clear Group to change many layers quickly."
-        )
-        self.review_visibility_note.setWordWrap(True)
-
-        self.review_progress = QProgressBar()
-        self.review_progress.setRange(0, 100)
-        self.review_progress.setValue(0)
-        layout.addWidget(self.review_progress)
-
-        splitter = QSplitter()
-        layout.addWidget(splitter, 1)
-
-        self.datasets_group_box = QGroupBox("Datasets")
-        datasets_group_layout = QVBoxLayout(self.datasets_group_box)
-
-        self.tree = DatasetTreeWidget()
-        self.tree.setHeaderLabels(["Datasets"])
-        self.tree.setDragDropMode(QTreeWidget.InternalMove)
-        self.tree.setSelectionMode(QTreeWidget.SingleSelection)
-        self.tree.itemSelectionChanged.connect(self.on_tree_selection_changed)
-        self.tree.itemChanged.connect(self.on_tree_item_changed)
-        self.tree.orderingChanged.connect(self.on_tree_order_changed)
-        datasets_group_layout.addWidget(self.tree, 1)
-
-        self.datasets_help_note = QLabel(
-            "Tip: Drag datasets between groups in the left pane to reorganize them manually."
-        )
-        self.datasets_help_note.setWordWrap(True)
-        datasets_group_layout.addWidget(self.datasets_help_note)
-
-        splitter.addWidget(self.datasets_group_box)
-
-        actions_host = QWidget()
-        actions_layout = QVBoxLayout(actions_host)
-        actions_layout.setContentsMargins(0, 0, 0, 0)
-        actions_layout.setSpacing(8)
-
-        actions_layout.addWidget(self.review_actions_group_box)
-        actions_layout.addWidget(self.review_visibility_note)
-
-        self.selection_group_box = QGroupBox("Selection")
-        selection_layout = QGridLayout(self.selection_group_box)
-        self.show_all_button = QPushButton("Select All")
-        self.show_all_button.clicked.connect(lambda: self.set_all_checked(True))
-        selection_layout.addWidget(self.show_all_button, 0, 0)
-
-        self.hide_all_button = QPushButton("Clear All")
-        self.hide_all_button.clicked.connect(lambda: self.set_all_checked(False))
-        selection_layout.addWidget(self.hide_all_button, 0, 1)
-
-        self.show_group_button = QPushButton("Select Group")
-        self.show_group_button.clicked.connect(lambda: self.set_selected_group_checked(True))
-        selection_layout.addWidget(self.show_group_button, 1, 0)
-
-        self.hide_group_button = QPushButton("Clear Group")
-        self.hide_group_button.clicked.connect(lambda: self.set_selected_group_checked(False))
-        selection_layout.addWidget(self.hide_group_button, 1, 1)
-        selection_layout.setColumnStretch(0, 1)
-        selection_layout.setColumnStretch(1, 1)
-        actions_layout.addWidget(self.selection_group_box)
-
-        self.grouping_group_box = QGroupBox("Grouping")
-        grouping_layout = QGridLayout(self.grouping_group_box)
-        self.new_group_button = QPushButton("New Group")
-        self.new_group_button.clicked.connect(self.create_group)
-        grouping_layout.addWidget(self.new_group_button, 0, 0)
-
-        self.apply_group_button = QPushButton("Apply Suggested Group")
-        self.apply_group_button.clicked.connect(self.apply_suggested_group)
-        grouping_layout.addWidget(self.apply_group_button, 0, 1)
-
-        self.regroup_button = QPushButton("AI Regroup...")
-        self.regroup_button.clicked.connect(self.start_regroup_for_scope)
-        grouping_layout.addWidget(self.regroup_button, 1, 0)
-
-        self.reset_groups_button = QPushButton("Reset Groups")
-        self.reset_groups_button.clicked.connect(self.reset_groups_for_scope)
-        grouping_layout.addWidget(self.reset_groups_button, 1, 1)
-
-        grouping_layout.addWidget(QLabel("Scope"), 2, 0)
-        self.grouping_scope_combo = QComboBox()
-        self.grouping_scope_combo.addItem("Checked datasets", "checked")
-        self.grouping_scope_combo.addItem("All datasets", "all")
-        grouping_layout.addWidget(self.grouping_scope_combo, 2, 1)
-        grouping_layout.setColumnStretch(0, 1)
-        grouping_layout.setColumnStretch(1, 1)
-        actions_layout.addWidget(self.grouping_group_box)
-
-        self.dataset_actions_group_box = QGroupBox("Selection actions")
-        dataset_actions_layout = QGridLayout(self.dataset_actions_group_box)
-        self.fill_ai_fields_button = QPushButton("Fill Empty Fields from AI")
-        self.fill_ai_fields_button.clicked.connect(self.fill_checked_user_fields_from_ai)
-        dataset_actions_layout.addWidget(self.fill_ai_fields_button, 0, 0)
-
-        self.make_visible_button = QPushButton("Make visible in maps")
-        self.make_visible_button.clicked.connect(self.make_checked_visible_in_maps)
-        dataset_actions_layout.addWidget(self.make_visible_button, 0, 1)
-
-        self.hide_from_maps_button = QPushButton("Hide from maps")
-        self.hide_from_maps_button.clicked.connect(self.hide_checked_from_maps)
-        dataset_actions_layout.addWidget(self.hide_from_maps_button, 1, 0)
-
-        self.include_in_report_button = QPushButton("Include in export")
-        self.include_in_report_button.clicked.connect(self.include_checked_in_report)
-        dataset_actions_layout.addWidget(self.include_in_report_button, 1, 1)
-
-        self.exclude_from_report_button = QPushButton("Exclude from export")
-        self.exclude_from_report_button.clicked.connect(self.exclude_checked_from_report)
-        dataset_actions_layout.addWidget(self.exclude_from_report_button, 2, 0, 1, 2)
-        dataset_actions_layout.setColumnStretch(0, 1)
-        dataset_actions_layout.setColumnStretch(1, 1)
-        actions_layout.addWidget(self.dataset_actions_group_box)
-        actions_layout.addStretch(1)
-
-        splitter.addWidget(actions_host)
-
-        inspector_host = QWidget()
-        inspector_layout = QVBoxLayout(inspector_host)
+        details_host = QWidget()
+        details_host.setMinimumWidth(260)
+        details_host.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        details_layout = QVBoxLayout(details_host)
+        details_layout.setContentsMargins(0, 0, 0, 0)
+        details_layout.setSpacing(8)
 
         self.dataset_details_group_box = QGroupBox("Selected dataset")
         dataset_form = QFormLayout(self.dataset_details_group_box)
@@ -565,12 +471,247 @@ class MainWindow(QMainWindow):
         dataset_button_layout.addStretch(1)
         dataset_form.addRow("", dataset_button_host)
 
-        inspector_layout.addWidget(self.dataset_details_group_box)
-        inspector_layout.addStretch(1)
-        splitter.addWidget(inspector_host)
-        splitter.setStretchFactor(0, 4)
-        splitter.setStretchFactor(1, 3)
-        splitter.setStretchFactor(2, 4)
+        details_layout.addWidget(self.dataset_details_group_box)
+
+        navigation_host = QWidget()
+        navigation_layout = QHBoxLayout(navigation_host)
+        navigation_layout.setContentsMargins(0, 0, 0, 0)
+        navigation_layout.setSpacing(8)
+        navigation_layout.addStretch(1)
+
+        self.dataset_nav_first_button = QPushButton("First")
+        self.dataset_nav_first_button.clicked.connect(self.select_first_review_dataset)
+        navigation_layout.addWidget(self.dataset_nav_first_button)
+
+        self.dataset_nav_back_button = QPushButton("Back")
+        self.dataset_nav_back_button.clicked.connect(self.select_previous_review_dataset)
+        navigation_layout.addWidget(self.dataset_nav_back_button)
+
+        self.dataset_nav_next_button = QPushButton("Next")
+        self.dataset_nav_next_button.clicked.connect(self.select_next_review_dataset)
+        navigation_layout.addWidget(self.dataset_nav_next_button)
+
+        self.dataset_nav_last_button = QPushButton("Last")
+        self.dataset_nav_last_button.clicked.connect(self.select_last_review_dataset)
+        navigation_layout.addWidget(self.dataset_nav_last_button)
+        navigation_layout.addStretch(1)
+
+        details_layout.addWidget(navigation_host)
+        details_layout.addStretch(1)
+
+        self.review_dataset_splitter.addWidget(details_host)
+        self.review_dataset_splitter.setStretchFactor(0, 3)
+        self.review_dataset_splitter.setStretchFactor(1, 4)
+        QTimer.singleShot(0, self._sync_review_dataset_splitter_sizes)
+        self._update_dataset_navigation_buttons()
+
+    def _build_info_sources_tab(self) -> None:
+        layout = QVBoxLayout(self.info_sources_tab)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(10)
+
+        self.info_sources_intro_label = QLabel(
+            "Use this page for batch enrichment work. First choose what set of datasets to work on, "
+            "then run a discovery step, then regroup or apply bulk changes once the results look right."
+        )
+        self.info_sources_intro_label.setWordWrap(True)
+        layout.addWidget(self.info_sources_intro_label)
+
+        self.info_sources_splitter = QSplitter(Qt.Horizontal)
+        self.info_sources_splitter.setChildrenCollapsible(False)
+        layout.addWidget(self.info_sources_splitter, 1)
+
+        discovery_host = QWidget()
+        discovery_layout = QVBoxLayout(discovery_host)
+        discovery_layout.setContentsMargins(0, 0, 0, 0)
+        discovery_layout.setSpacing(8)
+
+        self.review_actions_group_box = QGroupBox("1. Discover info and sources")
+        review_actions_box_layout = QVBoxLayout(self.review_actions_group_box)
+        self.review_actions_intro_label = QLabel(
+            "Run one of these discovery steps on the chosen scope. Nothing here changes source files; "
+            "it updates GRASP's understanding and source suggestions."
+        )
+        self.review_actions_intro_label.setWordWrap(True)
+        review_actions_box_layout.addWidget(self.review_actions_intro_label)
+
+        review_actions_layout = QGridLayout()
+        self.fast_info_button = QPushButton("Find info (fast)")
+        self.fast_info_button.clicked.connect(self.start_fast_info_for_scope)
+        review_actions_layout.addWidget(self.fast_info_button, 0, 0)
+
+        self.run_ai_sources_button = QPushButton("Find info (AI)")
+        self.run_ai_sources_button.clicked.connect(self.start_ai_for_scope)
+        review_actions_layout.addWidget(self.run_ai_sources_button, 0, 1)
+
+        self.find_sources_button = QPushButton("Find sources")
+        self.find_sources_button.clicked.connect(self.start_sources_for_scope)
+        review_actions_layout.addWidget(self.find_sources_button, 0, 2)
+
+        review_actions_layout.addWidget(QLabel("Run on"), 1, 0)
+        self.review_scope_combo = QComboBox()
+        self.review_scope_combo.addItem("Checked datasets", "checked")
+        self.review_scope_combo.addItem("All datasets", "all")
+        review_actions_layout.addWidget(self.review_scope_combo, 1, 1, 1, 2)
+        review_actions_layout.setColumnStretch(0, 1)
+        review_actions_layout.setColumnStretch(1, 1)
+        review_actions_layout.setColumnStretch(2, 1)
+        review_actions_box_layout.addLayout(review_actions_layout)
+
+        self.review_actions_note = QLabel(
+            "Find info (fast): local first-pass, no external AI.\n"
+            "Find info (AI): updates AI title, AI description, and AI group suggestion.\n"
+            "Find sources: keeps the current understanding and refreshes likely external sources only."
+        )
+        self.review_actions_note.setWordWrap(True)
+        review_actions_box_layout.addWidget(self.review_actions_note)
+        discovery_layout.addWidget(self.review_actions_group_box)
+
+        self.review_job_group_box = QGroupBox("Current run and scope")
+        review_job_layout = QVBoxLayout(self.review_job_group_box)
+        self.review_job_status = QLabel("No dataset processing job running.")
+        self.review_job_status.setWordWrap(True)
+        review_job_layout.addWidget(self.review_job_status)
+
+        self.review_visibility_note = QLabel(
+            "The checked set comes from the checkboxes in Datasets overview. "
+            "Visible on map is controlled separately in Review datasets. On import, the app auto-enables map visibility for up to "
+            f"{MAX_AUTO_VISIBLE_DATASETS} smaller layers (max {MAX_AUTO_VISIBLE_FEATURES} features each) "
+            "and leaves the rest off to keep the map responsive."
+        )
+        self.review_visibility_note.setWordWrap(True)
+
+        self.review_progress = QProgressBar()
+        self.review_progress.setRange(0, 100)
+        self.review_progress.setValue(0)
+        review_job_layout.addWidget(self.review_progress)
+        review_job_layout.addWidget(self.review_visibility_note)
+        discovery_layout.addWidget(self.review_job_group_box)
+        discovery_layout.addStretch(1)
+        self.info_sources_splitter.addWidget(discovery_host)
+
+        batch_host = QWidget()
+        batch_layout = QVBoxLayout(batch_host)
+        batch_layout.setContentsMargins(0, 0, 0, 0)
+        batch_layout.setSpacing(8)
+
+        self.selection_group_box = QGroupBox("2. Choose datasets for batch work")
+        selection_layout = QGridLayout(self.selection_group_box)
+        self.show_all_button = QPushButton("Select All")
+        self.show_all_button.clicked.connect(lambda: self.set_all_checked(True))
+        selection_layout.addWidget(self.show_all_button, 0, 0)
+
+        self.hide_all_button = QPushButton("Clear All")
+        self.hide_all_button.clicked.connect(lambda: self.set_all_checked(False))
+        selection_layout.addWidget(self.hide_all_button, 0, 1)
+
+        self.show_group_button = QPushButton("Select Group")
+        self.show_group_button.clicked.connect(lambda: self.set_selected_group_checked(True))
+        selection_layout.addWidget(self.show_group_button, 1, 0)
+
+        self.hide_group_button = QPushButton("Clear Group")
+        self.hide_group_button.clicked.connect(lambda: self.set_selected_group_checked(False))
+        selection_layout.addWidget(self.hide_group_button, 1, 1)
+        selection_layout.setColumnStretch(0, 1)
+        selection_layout.setColumnStretch(1, 1)
+        self.selection_help_label = QLabel(
+            "Use these shortcuts when you want to redefine the checked set quickly before running discovery, regrouping, or batch changes."
+        )
+        self.selection_help_label.setWordWrap(True)
+        selection_layout.addWidget(self.selection_help_label, 2, 0, 1, 2)
+        batch_layout.addWidget(self.selection_group_box)
+
+        self.grouping_group_box = QGroupBox("3. Organize checked datasets")
+        grouping_layout = QGridLayout(self.grouping_group_box)
+        self.new_group_button = QPushButton("New Group")
+        self.new_group_button.clicked.connect(self.create_group)
+        grouping_layout.addWidget(self.new_group_button, 0, 0)
+
+        self.apply_group_button = QPushButton("Apply Suggested Group")
+        self.apply_group_button.clicked.connect(self.apply_suggested_group)
+        grouping_layout.addWidget(self.apply_group_button, 0, 1)
+
+        self.regroup_button = QPushButton("AI Regroup...")
+        self.regroup_button.clicked.connect(self.start_regroup_for_scope)
+        grouping_layout.addWidget(self.regroup_button, 1, 0)
+
+        self.reset_groups_button = QPushButton("Reset Groups")
+        self.reset_groups_button.clicked.connect(self.reset_groups_for_scope)
+        grouping_layout.addWidget(self.reset_groups_button, 1, 1)
+
+        grouping_layout.addWidget(QLabel("Scope"), 2, 0)
+        self.grouping_scope_combo = QComboBox()
+        self.grouping_scope_combo.addItem("Checked datasets", "checked")
+        self.grouping_scope_combo.addItem("All datasets", "all")
+        grouping_layout.addWidget(self.grouping_scope_combo, 2, 1)
+        grouping_layout.setColumnStretch(0, 1)
+        grouping_layout.setColumnStretch(1, 1)
+        self.grouping_help_label = QLabel(
+            "Apply Suggested Group uses the current AI group suggestion for each dataset. "
+            "AI Regroup prepares a proposal first so you can review it before anything is applied."
+        )
+        self.grouping_help_label.setWordWrap(True)
+        grouping_layout.addWidget(self.grouping_help_label, 3, 0, 1, 2)
+        batch_layout.addWidget(self.grouping_group_box)
+
+        self.dataset_actions_group_box = QGroupBox("4. Apply batch changes")
+        dataset_actions_layout = QGridLayout(self.dataset_actions_group_box)
+        self.fill_ai_fields_button = QPushButton("Fill Empty Fields from AI")
+        self.fill_ai_fields_button.clicked.connect(self.fill_checked_user_fields_from_ai)
+        dataset_actions_layout.addWidget(self.fill_ai_fields_button, 0, 0)
+
+        self.make_visible_button = QPushButton("Make visible in maps")
+        self.make_visible_button.clicked.connect(self.make_checked_visible_in_maps)
+        dataset_actions_layout.addWidget(self.make_visible_button, 0, 1)
+
+        self.hide_from_maps_button = QPushButton("Hide from maps")
+        self.hide_from_maps_button.clicked.connect(self.hide_checked_from_maps)
+        dataset_actions_layout.addWidget(self.hide_from_maps_button, 1, 0)
+
+        self.include_in_report_button = QPushButton("Include in export")
+        self.include_in_report_button.clicked.connect(self.include_checked_in_report)
+        dataset_actions_layout.addWidget(self.include_in_report_button, 1, 1)
+
+        self.exclude_from_report_button = QPushButton("Exclude from export")
+        self.exclude_from_report_button.clicked.connect(self.exclude_checked_from_report)
+        dataset_actions_layout.addWidget(self.exclude_from_report_button, 2, 0, 1, 2)
+        dataset_actions_layout.setColumnStretch(0, 1)
+        dataset_actions_layout.setColumnStretch(1, 1)
+        self.dataset_actions_help_label = QLabel(
+            "These actions affect only the checked datasets. They update GRASP metadata, grouping, and export or map flags; the source files stay untouched."
+        )
+        self.dataset_actions_help_label.setWordWrap(True)
+        dataset_actions_layout.addWidget(self.dataset_actions_help_label, 3, 0, 1, 2)
+        batch_layout.addWidget(self.dataset_actions_group_box)
+        batch_layout.addStretch(1)
+        self.info_sources_splitter.addWidget(batch_host)
+        self.info_sources_splitter.setStretchFactor(0, 4)
+        self.info_sources_splitter.setStretchFactor(1, 3)
+
+    def _build_datasets_overview_tab(self) -> None:
+        layout = QVBoxLayout(self.datasets_overview_tab)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(8)
+
+        self.datasets_group_box = QGroupBox("Datasets")
+        datasets_group_layout = QVBoxLayout(self.datasets_group_box)
+
+        self.tree = DatasetTreeWidget()
+        self.tree.setHeaderLabels(["Datasets"])
+        self.tree.setDragDropMode(QTreeWidget.InternalMove)
+        self.tree.setSelectionMode(QTreeWidget.SingleSelection)
+        self.tree.itemSelectionChanged.connect(self.on_tree_selection_changed)
+        self.tree.itemChanged.connect(self.on_tree_item_changed)
+        self.tree.orderingChanged.connect(self.on_tree_order_changed)
+        datasets_group_layout.addWidget(self.tree, 1)
+
+        self.datasets_help_note = QLabel(
+            "Tip: Drag datasets between groups in the overview below to reorganize them manually. "
+            "Checkboxes here define the batch-selection scope used by Info sources."
+        )
+        self.datasets_help_note.setWordWrap(True)
+        datasets_group_layout.addWidget(self.datasets_help_note)
+        layout.addWidget(self.datasets_group_box, 1)
 
     def _build_map_tab(self) -> None:
         layout = QVBoxLayout(self.map_tab)
@@ -594,10 +735,6 @@ class MainWindow(QMainWindow):
         export_gpkg_button = QPushButton("Export GeoPackage")
         export_gpkg_button.clicked.connect(self.export_gpkg)
         row.addWidget(export_gpkg_button)
-
-        export_parquet_button = QPushButton("Export GeoParquet")
-        export_parquet_button.clicked.connect(self.export_geoparquet)
-        row.addWidget(export_parquet_button)
         row.addStretch(1)
         layout.addLayout(row)
 
@@ -664,7 +801,7 @@ class MainWindow(QMainWindow):
         self.ai_context_group_box = QGroupBox("AI Classification Context")
         ai_context_layout = QVBoxLayout(self.ai_context_group_box)
         ai_context_intro = QLabel(
-            "Choose which dataset clues are sent to OpenAI during manual AI runs in Review. "
+            "Choose which dataset clues are sent to OpenAI during manual AI runs in Info sources. "
             "Keep this lean to reduce token use. Search-based enrichment can add more evidence later."
         )
         ai_context_intro.setWordWrap(True)
@@ -738,13 +875,36 @@ class MainWindow(QMainWindow):
         self.about_tagline_label.setStyleSheet("font-size: 14px; color: #6a5533;")
         layout.addWidget(self.about_tagline_label)
 
+        self.about_illustration_path = ABOUT_ILLUSTRATION_PATH
+        self.about_icon_path = APP_ICON_PATH
+        self.about_illustration_label = QLabel()
+        self.about_illustration_label.setObjectName("AboutIllustration")
+        self.about_illustration_label.setAlignment(Qt.AlignCenter)
+        self.about_illustration_label.setMinimumHeight(220)
+        self.about_illustration_label.setStyleSheet(
+            "background-color: #fbf6ee; border: 1px solid #d4c0a2; border-radius: 16px; padding: 10px;"
+        )
+        illustration_pixmap = QPixmap(str(self.about_illustration_path))
+        if illustration_pixmap.isNull():
+            self.about_illustration_label.setText(
+                "Playful GRASP illustration: scattered dataset files are funneled into a GPKG bag."
+            )
+            self.about_illustration_label.setWordWrap(True)
+        else:
+            self.about_illustration_label.setPixmap(
+                illustration_pixmap.scaled(560, 220, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            )
+        layout.addWidget(self.about_illustration_label)
+
         self.about_author_label = QLabel(f"Created by {APP_AUTHOR}")
         self.about_author_label.setWordWrap(True)
         layout.addWidget(self.about_author_label)
 
         self.about_purpose_label = QLabel(
-            "GRASP is a desktop application for working through folders of GIS vector files such as "
-            "Shapefile, GeoPackage and GeoParquet datasets."
+            "Why I made it: GIS work can involve an overwhelming number of datasets that need to be "
+            "compiled into a unified store for further use or distribution. Manual handling is just "
+            "not realistic at that scale, so GRASP is a desktop application for working through folders "
+            "of GIS vector files such as Shapefile, GeoPackage and GeoParquet datasets."
         )
         self.about_purpose_label.setWordWrap(True)
         layout.addWidget(self.about_purpose_label)
@@ -760,17 +920,28 @@ class MainWindow(QMainWindow):
             "- helps users group datasets into rational categories\n"
             "- previews layers in a lightweight desktop map\n"
             "- generates styling from names and descriptions\n"
-            "- exports a packaged GeoPackage with metadata and QGIS project information"
+            "- exports a packaged GeoPackage with metadata and QGIS project information\n"
+            "- helps assemble a more usable, unified dataset package for follow-on work"
         )
         self.about_capabilities_label.setWordWrap(True)
         layout.addWidget(self.about_capabilities_label)
 
         self.about_note_label = QLabel(
-            "The goal is to help users build as much structured knowledge as possible around their spatial datasets "
-            "before packaging them for further GIS work."
+            "Approach and trade-off: the upside is faster processing and AI assistance that can help fill "
+            "gaps when source metadata is incomplete. The downside is that automation may still miss details, "
+            "so human review is still needed before distribution."
         )
         self.about_note_label.setWordWrap(True)
         layout.addWidget(self.about_note_label)
+
+        self.about_links_label = QLabel(
+            f'Links: <a href="{APP_LINKEDIN_URL}">LinkedIn profile</a> | '
+            f'<a href="{APP_REPOSITORY_URL}">GitHub repository</a>'
+        )
+        self.about_links_label.setWordWrap(True)
+        self.about_links_label.setOpenExternalLinks(True)
+        self.about_links_label.setTextFormat(Qt.RichText)
+        layout.addWidget(self.about_links_label)
 
         layout.addStretch(1)
 
@@ -868,7 +1039,7 @@ class MainWindow(QMainWindow):
         dataset_ids = sync_summary["changed_ids"]
         if dataset_ids:
             self.append_activity_log(
-                f"{len(dataset_ids)} new or changed dataset(s) are ready for Find info (fast) in Review.",
+                f"{len(dataset_ids)} new or changed dataset(s) are ready for Find info (fast) in Info sources.",
                 activity=REBUILD_ARCHIVE_LABEL,
             )
         else:
@@ -1386,6 +1557,122 @@ class MainWindow(QMainWindow):
     def on_tree_selection_changed(self) -> None:
         dataset = self.selected_dataset()
         self.populate_inspector(dataset)
+        if not self._syncing_dataset_selection:
+            self._syncing_dataset_selection = True
+            try:
+                self._set_review_dataset_table_selection(self.selected_dataset_id())
+            finally:
+                self._syncing_dataset_selection = False
+        self._update_dataset_navigation_buttons()
+
+    def on_review_dataset_selection_changed(self) -> None:
+        self._update_dataset_navigation_buttons()
+        if self._syncing_dataset_selection:
+            return
+        dataset_id = self.selected_review_dataset_id()
+        if not dataset_id:
+            return
+        self._syncing_dataset_selection = True
+        try:
+            self._set_tree_current_dataset(dataset_id)
+        finally:
+            self._syncing_dataset_selection = False
+
+    def selected_review_dataset_id(self) -> str:
+        if not hasattr(self, "review_dataset_table"):
+            return ""
+        selection_model = self.review_dataset_table.selectionModel()
+        if selection_model is None:
+            return ""
+        selected_rows = selection_model.selectedRows()
+        if not selected_rows:
+            return ""
+        row = selected_rows[0].row()
+        if row < 0 or row >= len(self._dataset_browser_row_ids):
+            return ""
+        return self._dataset_browser_row_ids[row]
+
+    def _current_review_dataset_row(self) -> int:
+        if not hasattr(self, "review_dataset_table"):
+            return -1
+        selection_model = self.review_dataset_table.selectionModel()
+        if selection_model is None:
+            return -1
+        selected_rows = selection_model.selectedRows()
+        if not selected_rows:
+            return -1
+        return selected_rows[0].row()
+
+    def _set_tree_current_dataset(self, dataset_id: str) -> None:
+        target_item = self._find_tree_item_for_dataset_id(dataset_id)
+        if target_item is not None:
+            self.tree.setCurrentItem(target_item)
+
+    def _find_tree_item_for_dataset_id(self, dataset_id: str) -> QTreeWidgetItem | None:
+        if not dataset_id:
+            return None
+        for group_index in range(self.tree.topLevelItemCount()):
+            group_item = self.tree.topLevelItem(group_index)
+            for child_index in range(group_item.childCount()):
+                child_item = group_item.child(child_index)
+                if self._dataset_id_from_tree_item(child_item) == dataset_id:
+                    return child_item
+        return None
+
+    def _set_review_dataset_table_selection(self, dataset_id: str) -> None:
+        if not hasattr(self, "review_dataset_table"):
+            return
+        selection_model = self.review_dataset_table.selectionModel()
+        if selection_model is None:
+            return
+        self.review_dataset_table.clearSelection()
+        if not dataset_id:
+            return
+        for row_index, row_dataset_id in enumerate(self._dataset_browser_row_ids):
+            if row_dataset_id != dataset_id:
+                continue
+            self.review_dataset_table.selectRow(row_index)
+            item = self.review_dataset_table.item(row_index, 0)
+            if item is not None:
+                self.review_dataset_table.scrollToItem(item)
+            return
+
+    def select_first_review_dataset(self) -> None:
+        if not self._dataset_browser_row_ids:
+            return
+        self._select_review_dataset_row(0)
+
+    def select_previous_review_dataset(self) -> None:
+        row = self._current_review_dataset_row()
+        if row > 0:
+            self._select_review_dataset_row(row - 1)
+
+    def select_next_review_dataset(self) -> None:
+        row = self._current_review_dataset_row()
+        if 0 <= row < len(self._dataset_browser_row_ids) - 1:
+            self._select_review_dataset_row(row + 1)
+
+    def select_last_review_dataset(self) -> None:
+        if not self._dataset_browser_row_ids:
+            return
+        self._select_review_dataset_row(len(self._dataset_browser_row_ids) - 1)
+
+    def _select_review_dataset_row(self, row: int) -> None:
+        if row < 0 or row >= len(self._dataset_browser_row_ids):
+            return
+        self.review_dataset_table.clearSelection()
+        self.review_dataset_table.selectRow(row)
+        item = self.review_dataset_table.item(row, 0)
+        if item is not None:
+            self.review_dataset_table.scrollToItem(item)
+
+    def _update_dataset_navigation_buttons(self) -> None:
+        row = self._current_review_dataset_row()
+        has_rows = bool(self._dataset_browser_row_ids)
+        self.dataset_nav_first_button.setEnabled(has_rows and row != 0)
+        self.dataset_nav_back_button.setEnabled(has_rows and row > 0)
+        self.dataset_nav_next_button.setEnabled(has_rows and 0 <= row < len(self._dataset_browser_row_ids) - 1)
+        self.dataset_nav_last_button.setEnabled(has_rows and row != len(self._dataset_browser_row_ids) - 1)
 
     def on_tree_item_changed(self, item: QTreeWidgetItem, _column: int) -> None:
         if self._populating_tree or self.repository is None:
@@ -1576,18 +1863,10 @@ class MainWindow(QMainWindow):
             grouped.setdefault(str(group_name).strip() or REGROUP_OTHERS_GROUP_NAME, []).append(dataset_name)
         preview_lines: list[str] = []
         grouped_items = sorted(grouped.items(), key=lambda item: (-len(item[1]), item[0].lower()))
-        for index, (group_name, dataset_names) in enumerate(grouped_items):
-            if index >= REGROUP_PREVIEW_GROUP_LIMIT:
-                break
+        for group_name, dataset_names in grouped_items:
             preview_lines.append(f"{group_name} ({len(dataset_names)})")
-            for dataset_name in sorted(dataset_names, key=str.lower)[:REGROUP_PREVIEW_DATASET_LIMIT]:
+            for dataset_name in sorted(dataset_names, key=str.lower):
                 preview_lines.append(f"  - {dataset_name}")
-            remaining = len(dataset_names) - REGROUP_PREVIEW_DATASET_LIMIT
-            if remaining > 0:
-                preview_lines.append(f"  - +{remaining} more dataset(s)")
-        remaining_groups = len(grouped_items) - REGROUP_PREVIEW_GROUP_LIMIT
-        if remaining_groups > 0:
-            preview_lines.append(f"+{remaining_groups} more proposed group(s)")
         dialog = QDialog(self)
         dialog.setWindowTitle("Review regroup proposal")
         dialog.setModal(True)
@@ -1617,7 +1896,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(preview_box, 1)
 
         question_label = QLabel(
-            "Apply these group assignments? You can still drag datasets between groups in the left pane afterward."
+            "Apply these group assignments? You can still drag datasets between groups in the Datasets overview tab afterward."
         )
         question_label.setObjectName("regroupQuestionLabel")
         question_label.setWordWrap(True)
@@ -1686,22 +1965,6 @@ class MainWindow(QMainWindow):
             activity_name="Export GeoPackage",
         )
 
-    def export_geoparquet(self) -> None:
-        if self.export_service is None or self.current_workspace is None:
-            QMessageBox.information(self, "No project", "Load or scan a folder first.")
-            return
-        default_path = self.current_workspace.exports_dir / DEFAULT_EXPORT_PARQUET_NAME
-        path, _ = QFileDialog.getSaveFileName(self, "Export GeoParquet", str(default_path), "Parquet (*.parquet)")
-        if not path:
-            return
-        self._start_worker(
-            self.export_service.export_geoparquet,
-            path,
-            success_message="GeoParquet export completed.",
-            start_message="Exporting GeoParquet...",
-            activity_name="Export GeoParquet",
-        )
-
     def _style_dataset_ids(self, dataset_ids: list[str], *, status_callback=None, progress_callback=None) -> int:
         if self.repository is None:
             return 0
@@ -1753,7 +2016,61 @@ class MainWindow(QMainWindow):
     def refresh_all_views(self) -> None:
         self.refresh_import_table()
         self.refresh_tree()
+        self.refresh_dataset_browser_table()
         self.refresh_map()
+
+    def refresh_dataset_browser_table(self) -> None:
+        if not hasattr(self, "review_dataset_table"):
+            return
+        selected_id = self.selected_dataset_id()
+        filter_text = self.review_dataset_filter_edit.text().strip().lower() if hasattr(self, "review_dataset_filter_edit") else ""
+        group_lookup = dict(self.repository.list_groups()) if self.repository is not None else {}
+        datasets = [
+            dataset
+            for dataset in self._datasets()
+            if self._dataset_matches_browser_filter(dataset, filter_text, group_lookup)
+        ]
+        self._dataset_browser_row_ids = [dataset.dataset_id for dataset in datasets]
+        self.review_dataset_table.setSortingEnabled(False)
+        self.review_dataset_table.clearContents()
+        self.review_dataset_table.setRowCount(len(datasets))
+        for row_index, dataset in enumerate(datasets):
+            group_name = group_lookup.get(dataset.group_id, display_group_name(dataset.group_id))
+            dataset_item = SortableTableWidgetItem(dataset.preferred_name, dataset.preferred_name.lower())
+            dataset_item.setData(Qt.UserRole, dataset.dataset_id)
+            self.review_dataset_table.setItem(row_index, 0, dataset_item)
+            self.review_dataset_table.setItem(
+                row_index,
+                1,
+                SortableTableWidgetItem(group_name, group_name.lower()),
+            )
+            self.review_dataset_table.setItem(
+                row_index,
+                2,
+                SortableTableWidgetItem(dataset.source_format, dataset.source_format.lower()),
+            )
+        self._syncing_dataset_selection = True
+        try:
+            self._set_review_dataset_table_selection(selected_id)
+        finally:
+            self._syncing_dataset_selection = False
+        self._update_dataset_navigation_buttons()
+
+    def _dataset_matches_browser_filter(self, dataset, filter_text: str, group_lookup: dict[str, str]) -> bool:
+        if not filter_text:
+            return True
+        group_name = group_lookup.get(dataset.group_id, display_group_name(dataset.group_id))
+        haystack = " ".join(
+            [
+                dataset.preferred_name,
+                dataset.source_format,
+                dataset.geometry_type,
+                dataset.source_path,
+                group_name,
+                dataset.suggested_group,
+            ]
+        ).lower()
+        return filter_text in haystack
 
     def refresh_import_table(self) -> None:
         datasets = self._datasets()
@@ -1838,7 +2155,7 @@ class MainWindow(QMainWindow):
                     child.setData(0, Qt.UserRole, dataset.dataset_id)
                     child.setFlags(child.flags() | Qt.ItemIsUserCheckable | Qt.ItemIsDragEnabled | Qt.ItemIsSelectable | Qt.ItemIsEnabled)
                     child.setCheckState(0, Qt.Checked if dataset.dataset_id in self._checked_dataset_id_set else Qt.Unchecked)
-                    child.setToolTip(0, "Checked = selected for batch actions in Review")
+                    child.setToolTip(0, "Checked = selected for batch actions in Info sources")
                     group_item.addChild(child)
                     group_dataset_ids.append(dataset.dataset_id)
                     if dataset.dataset_id == selected_id:
@@ -1863,20 +2180,20 @@ class MainWindow(QMainWindow):
             self.map_bridge.set_scope(map_scope)
         if self._review_job_running:
             self.map_summary.setText(
-                f"Map layers available: {len(map_dataset_ids)} of {len(datasets)} | Checked in Review: {checked_count} | Styled: {style_count}. "
+                f"Map layers available: {len(map_dataset_ids)} of {len(datasets)} | Checked for batch actions: {checked_count} | Styled: {style_count}. "
                 "Map loading is paused while dataset processing is running."
             )
             return
         if not self._is_map_tab_active():
             self.map_summary.setText(
-                f"Map layers available: {len(map_dataset_ids)} of {len(datasets)} | Checked in Review: {checked_count} | Styled: {style_count}. "
+                f"Map layers available: {len(map_dataset_ids)} of {len(datasets)} | Checked for batch actions: {checked_count} | Styled: {style_count}. "
                 "Open the Map / Export tab to load the map in browse mode."
             )
             return
         self._ensure_map_ready()
         if WEBENGINE_AVAILABLE and not self._map_page_ready:
             self.map_summary.setText(
-                f"Map layers available: {len(map_dataset_ids)} of {len(datasets)} | Checked in Review: {checked_count} | Styled: {style_count}. "
+                f"Map layers available: {len(map_dataset_ids)} of {len(datasets)} | Checked for batch actions: {checked_count} | Styled: {style_count}. "
                 "Preparing the embedded map renderer..."
             )
             return
@@ -1884,7 +2201,7 @@ class MainWindow(QMainWindow):
             self.map_bridge.set_scope(map_scope)
         scope_note = "using datasets marked Visible on map." if map_scope == "visible" else "showing all datasets."
         self.map_summary.setText(
-            f"Map layers available: {len(map_dataset_ids)} of {len(datasets)} | Checked in Review: {checked_count} | Styled: {style_count}. "
+            f"Map layers available: {len(map_dataset_ids)} of {len(datasets)} | Checked for batch actions: {checked_count} | Styled: {style_count}. "
             f"Browse mode loads one layer at a time by default, {scope_note}"
         )
         if self.map_bridge is not None:
@@ -2137,6 +2454,8 @@ class MainWindow(QMainWindow):
         return self.tabs.currentWidget() is self.map_tab
 
     def on_tab_changed(self, _index: int) -> None:
+        if self.tabs.currentWidget() is self.review_datasets_tab:
+            self._sync_review_dataset_splitter_sizes()
         if not self._is_map_tab_active():
             return
         self.refresh_map()
@@ -2145,6 +2464,39 @@ class MainWindow(QMainWindow):
                 self.map_view.page().runJavaScript("window.dispatchEvent(new Event('resize'));")
             except Exception:
                 pass
+
+    def resizeEvent(self, event) -> None:  # type: ignore[override]
+        super().resizeEvent(event)
+        if self.tabs.currentWidget() is self.review_datasets_tab:
+            self._sync_review_dataset_splitter_sizes()
+
+    def _sync_review_dataset_splitter_sizes(self) -> None:
+        if self._updating_review_dataset_splitter or not hasattr(self, "review_dataset_splitter"):
+            return
+        if self.review_dataset_splitter.count() < 2:
+            return
+        available_width = self.review_dataset_splitter.width() or self.review_datasets_tab.width()
+        if available_width <= 0:
+            return
+        if available_width < 900:
+            browser_ratio = 0.44
+        elif available_width < 1400:
+            browser_ratio = 0.38
+        else:
+            browser_ratio = 0.34
+        browser_min_width = 220
+        details_min_width = 320
+        browser_width = int(available_width * browser_ratio)
+        if available_width >= browser_min_width + details_min_width:
+            browser_width = max(browser_min_width, min(browser_width, available_width - details_min_width))
+        else:
+            browser_width = max(160, browser_width)
+        details_width = max(0, available_width - browser_width)
+        self._updating_review_dataset_splitter = True
+        try:
+            self.review_dataset_splitter.setSizes([browser_width, details_width])
+        finally:
+            self._updating_review_dataset_splitter = False
 
     def _on_map_view_loaded(self, ok: bool) -> None:
         self._map_page_ready = bool(ok)
@@ -2947,9 +3299,8 @@ class MainWindow(QMainWindow):
             self.log_window.activateWindow()
 
     def _apply_canvas_theme(self) -> None:
-        assets_dir = Path(__file__).resolve().parent / "assets"
-        checked_icon = (assets_dir / "checkmark_checked.svg").as_posix()
-        indeterminate_icon = (assets_dir / "checkmark_indeterminate.svg").as_posix()
+        checked_icon = (UI_ASSETS_DIR / "checkmark_checked.svg").as_posix()
+        indeterminate_icon = (UI_ASSETS_DIR / "checkmark_indeterminate.svg").as_posix()
         self.setStyleSheet(
             """
             QWidget#CentralHost {
@@ -2964,7 +3315,8 @@ class MainWindow(QMainWindow):
                 border-top: 1px solid #cbb791;
                 background-color: #f3ecdf;
             }
-            QWidget#ImportTab, QWidget#ReviewTab, QWidget#MapTab, QWidget#SettingsTab, QWidget#AboutTab {
+            QWidget#ImportTab, QWidget#ReviewDatasetsTab, QWidget#InfoSourcesTab,
+            QWidget#DatasetsOverviewTab, QWidget#MapTab, QWidget#SettingsTab, QWidget#AboutTab {
                 background-color: #f3ecdf;
             }
             QWidget#GlobalActionsBar {

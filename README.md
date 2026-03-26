@@ -17,7 +17,7 @@ GRASP is no longer just a scaffold. The current application supports an end-to-e
 5. Optionally enrich understanding with OpenAI and live source search.
 6. Review datasets in a grouped tree with batch actions.
 7. Preview layers in an embedded map.
-8. Export selected datasets as GeoPackage or GeoParquet.
+8. Export selected datasets as GeoPackage.
 
 The repository also includes tests for import, review, map bridge behavior, styling-related assets, and export-facing logic.
 
@@ -62,12 +62,10 @@ The repository also includes tests for import, review, map bridge behavior, styl
 
 - Exports selected datasets to:
   - GeoPackage
-  - GeoParquet
 - GeoPackage export also writes:
   - metadata tables
   - layer style content
   - sidecar QGIS project files (`.qgs` and `.qgz`)
-- GeoParquet export is streamed incrementally to reduce peak memory usage on larger exports.
 
 ## Supported formats
 
@@ -82,7 +80,6 @@ Input:
 Output:
 
 - GeoPackage
-- GeoParquet
 - GeoPackage sidecar QGIS projects (`.qgs`, `.qgz`)
 
 ## Project workspace

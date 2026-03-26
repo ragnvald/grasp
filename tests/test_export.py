@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from contextlib import closing
 import sqlite3
@@ -20,7 +20,7 @@ from grasp.workspace import ensure_workspace
 
 
 class ExportServiceTests(unittest.TestCase):
-    def test_export_geopackage_and_geoparquet(self) -> None:
+    def test_export_geopackage_writes_metadata_and_project_files(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             workspace = ensure_workspace(root)
@@ -70,24 +70,9 @@ class ExportServiceTests(unittest.TestCase):
             with patch.object(export_service_module, "QGIS_TEMPLATE_QGZ_PATH", template_path):
                 service = ExportService(workspace, repo)
                 gpkg_path = service.export_gpkg(workspace.exports_dir / "knowledge.gpkg")
-                parquet_path = service.export_geoparquet(workspace.exports_dir / "knowledge.parquet")
             project_dir = template_dir
 
             self.assertTrue(gpkg_path.exists())
-            self.assertTrue(parquet_path.exists())
-
-            exported = gpd.read_parquet(parquet_path)
-            self.assertEqual(sorted(exported.columns.tolist()), sorted([
-                "dataset_id",
-                "dataset_name",
-                "group_name",
-                "description",
-                "attributes_json",
-                "source_url",
-                "source_evidence_json",
-                "geometry",
-            ]))
-            self.assertEqual(len(exported), 2)
 
             with closing(sqlite3.connect(gpkg_path)) as conn:
                 tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
@@ -104,6 +89,9 @@ class ExportServiceTests(unittest.TestCase):
                 self.assertTrue(dataset_catalog[2])
                 project_row = conn.execute("SELECT project_xml FROM grasp_qgis_project").fetchone()
                 self.assertIn("points", project_row[0].lower())
+
+            exported = gpd.read_file(gpkg_path, layer="Points")
+            self.assertEqual(len(exported), 2)
 
             qgs_path = project_dir / "knowledge_gpkg.qgs"
             qgz_path = project_dir / "knowledge_gpkg.qgz"
@@ -134,109 +122,7 @@ class ExportServiceTests(unittest.TestCase):
                 self.assertIn("OSM Standard", qgz_project)
                 self.assertIn("../../", qgz_project)
 
-            parquet_qgs_path = project_dir / "knowledge_parquet.qgs"
-            parquet_qgz_path = project_dir / "knowledge_parquet.qgz"
-            self.assertTrue(parquet_qgs_path.exists())
-            self.assertTrue(parquet_qgz_path.exists())
-            parquet_qgs = parquet_qgs_path.read_text(encoding="utf-8")
-            self.assertIn("../../", parquet_qgs)
-            self.assertIn("knowledge.parquet", parquet_qgs)
-            parquet_root = ET.fromstring(parquet_qgs)
-            parquet_layers_by_name = {
-                maplayer.findtext("layername"): maplayer
-                for maplayer in parquet_root.findall(".//projectlayers/maplayer")
-            }
-            self.assertIsNotNone(parquet_layers_by_name["Points"].find("renderer-v2"))
-            self.assertEqual(
-                parquet_layers_by_name["Points"].findtext("subsetString"),
-                "\"dataset_id\" = 'ds1'",
-            )
-            with zipfile.ZipFile(parquet_qgz_path) as archive:
-                self.assertIn(parquet_qgs_path.name, archive.namelist())
-                parquet_qgz_project = archive.read(parquet_qgs_path.name).decode("utf-8")
-                self.assertIn("knowledge.parquet", parquet_qgz_project)
-
-    def test_geoparquet_project_filters_each_dataset_layer(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            workspace = ensure_workspace(root)
-            repo = CatalogRepository(workspace.db_path)
-            template_dir = root / "data" / "qgis"
-            template_dir.mkdir(parents=True, exist_ok=True)
-            template_path = template_dir / "template.qgz"
-            template_path.write_bytes(export_service_module.QGIS_TEMPLATE_QGZ_PATH.read_bytes())
-
-            first = gpd.GeoDataFrame(
-                {"name": ["a"]},
-                geometry=[Point(10.4, 63.4)],
-                crs="EPSG:4326",
-            )
-            second = gpd.GeoDataFrame(
-                {"name": ["b"]},
-                geometry=[Point(10.6, 63.5)],
-                crs="EPSG:4326",
-            )
-            first_cache_path = workspace.dataset_cache_path("ds1")
-            second_cache_path = workspace.dataset_cache_path("ds'2")
-            first.to_parquet(first_cache_path, index=False)
-            second.to_parquet(second_cache_path, index=False)
-
-            repo.replace_datasets(
-                [
-                    DatasetRecord(
-                        dataset_id="ds1",
-                        source_path=str(root / "points_one.geojson"),
-                        source_format="geojson",
-                        geometry_type="Point",
-                        feature_count=1,
-                        column_profile_json='{"columns":[{"name":"name","dtype":"object","samples":["a"]}]}',
-                        fingerprint="abc",
-                        cache_path=str(first_cache_path),
-                    ),
-                    DatasetRecord(
-                        dataset_id="ds'2",
-                        source_path=str(root / "points_two.geojson"),
-                        source_format="geojson",
-                        geometry_type="Point",
-                        feature_count=1,
-                        column_profile_json='{"columns":[{"name":"name","dtype":"object","samples":["b"]}]}',
-                        fingerprint="def",
-                        cache_path=str(second_cache_path),
-                    ),
-                ]
-            )
-            repo.save_dataset_user_fields(
-                "ds1",
-                display_name_user="Points One",
-                description_user="Example one",
-                visibility=True,
-                include_in_export=True,
-            )
-            repo.save_dataset_user_fields(
-                "ds'2",
-                display_name_user="Points Two",
-                description_user="Example two",
-                visibility=True,
-                include_in_export=True,
-            )
-
-            with patch.object(export_service_module, "QGIS_TEMPLATE_QGZ_PATH", template_path):
-                service = ExportService(workspace, repo)
-                service.export_geoparquet(workspace.exports_dir / "knowledge.parquet")
-
-            parquet_qgs_path = template_dir / "knowledge_parquet.qgs"
-            parquet_root = ET.fromstring(parquet_qgs_path.read_text(encoding="utf-8"))
-            parquet_layers_by_name = {
-                maplayer.findtext("layername"): maplayer
-                for maplayer in parquet_root.findall(".//projectlayers/maplayer")
-            }
-            first_layer = parquet_layers_by_name["Points One"]
-            second_layer = parquet_layers_by_name["Points Two"]
-            self.assertEqual(first_layer.findtext("datasource"), second_layer.findtext("datasource"))
-            self.assertEqual(first_layer.findtext("subsetString"), "\"dataset_id\" = 'ds1'")
-            self.assertEqual(second_layer.findtext("subsetString"), "\"dataset_id\" = 'ds''2'")
-
-    def test_export_builds_missing_cache_from_source(self) -> None:
+    def test_export_geopackage_builds_missing_cache_from_source(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             workspace = ensure_workspace(root)
@@ -264,6 +150,7 @@ class ExportServiceTests(unittest.TestCase):
                         geometry_type="Point",
                         feature_count=2,
                         include_in_export=True,
+                        display_name_user="Points",
                         column_profile_json='{"columns":[{"name":"name","dtype":"object","samples":["a"]}]}',
                         fingerprint="abc",
                         cache_path=str(cache_path),
@@ -273,14 +160,13 @@ class ExportServiceTests(unittest.TestCase):
 
             with patch.object(export_service_module, "QGIS_TEMPLATE_QGZ_PATH", template_path):
                 service = ExportService(workspace, repo)
-                parquet_path = service.export_geoparquet(workspace.exports_dir / "knowledge.parquet")
+                gpkg_path = service.export_gpkg(workspace.exports_dir / "knowledge.gpkg")
 
-            self.assertTrue(parquet_path.exists())
+            self.assertTrue(gpkg_path.exists())
             self.assertTrue(cache_path.exists())
-            exported = gpd.read_parquet(parquet_path)
+            exported = gpd.read_file(gpkg_path, layer="Points")
             self.assertEqual(len(exported), 2)
 
 
 if __name__ == "__main__":
     unittest.main()
-

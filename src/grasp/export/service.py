@@ -2,7 +2,6 @@
 
 from contextlib import closing
 import gc
-import json
 import os
 from pathlib import Path
 import sqlite3
@@ -11,8 +10,6 @@ from xml.etree import ElementTree as ET
 
 import geopandas as gpd
 import pandas as pd
-import pyarrow.parquet as pq
-from geopandas.io.arrow import _geopandas_to_arrow
 
 from grasp.catalog.repository import CatalogRepository
 from grasp.ingest.service import IngestService
@@ -94,103 +91,6 @@ class ExportService:
         self._write_metadata_tables(target, datasets, layer_specs, project_xml)
         self._write_qgis_project_files(target, project_xml)
         gc.collect()
-        return target
-
-    def export_geoparquet(self, path: str | Path) -> Path:
-        target = Path(path)
-        target.parent.mkdir(parents=True, exist_ok=True)
-        datasets = [dataset for dataset in self.repository.list_datasets() if dataset.include_in_export]
-        selected_sources = {dataset.dataset_id: self._selected_source(dataset.dataset_id) for dataset in datasets}
-        group_lookup = dict(self.repository.list_groups())
-        writer: pq.ParquetWriter | None = None
-        layer_specs: list[dict[str, str]] = []
-        all_bounds: list[list[float]] = []
-        for dataset in datasets:
-            gdf = self._load_cache(dataset)
-            if gdf.empty:
-                del gdf
-                continue
-            source = selected_sources.get(dataset.dataset_id)
-            out = gdf.copy()
-            non_geometry_columns = [column for column in out.columns if column != out.geometry.name]
-            out["dataset_id"] = dataset.dataset_id
-            out["dataset_name"] = dataset.preferred_name
-            out["group_name"] = group_lookup.get(dataset.group_id, dataset.group_id)
-            out["description"] = dataset.preferred_description
-            out["source_url"] = source.url if source else ""
-            out["source_evidence_json"] = source.to_json() if source else ""
-            out["attributes_json"] = out[non_geometry_columns].apply(
-                lambda row: json.dumps({key: _coerce_value(value) for key, value in row.items()}, ensure_ascii=False),
-                axis=1,
-            )
-            keep_columns = [
-                "dataset_id",
-                "dataset_name",
-                "group_name",
-                "description",
-                "attributes_json",
-                "source_url",
-                "source_evidence_json",
-                out.geometry.name,
-            ]
-            out = out[keep_columns]
-            if out.geometry.name != "geometry":
-                out = out.rename_geometry("geometry")
-            style = self._style_for_dataset(dataset, group_name=group_lookup.get(dataset.group_id, dataset.group_id))
-            style_qml = self.style_service.qgis_style_qml(dataset, style)
-            layer_specs.append(
-                {
-                    "dataset_id": dataset.dataset_id,
-                    "display_name": dataset.preferred_name,
-                    "description": dataset.preferred_description,
-                    "layer_name": "",
-                    "geometry_type": _geometry_type_for_qgis(dataset.geometry_type),
-                    "style_summary": style.summary,
-                    "style_theme": style.theme,
-                    "style_qml": style_qml,
-                    "subset_string": self._dataset_subset_string(dataset.dataset_id),
-                }
-            )
-            if dataset.bbox_wgs84:
-                all_bounds.append(dataset.bbox_wgs84)
-            table = _geopandas_to_arrow(out, index=False)
-            if writer is None:
-                writer = pq.ParquetWriter(target, table.schema)
-            writer.write_table(table)
-            del out
-            del gdf
-            gc.collect()
-        if writer is not None:
-            writer.close()
-        else:
-            gpd.GeoDataFrame(
-                columns=[
-                    "dataset_id",
-                    "dataset_name",
-                    "group_name",
-                    "description",
-                    "attributes_json",
-                    "source_url",
-                    "source_evidence_json",
-                    "geometry",
-                ],
-                geometry="geometry",
-                crs="EPSG:4326",
-            ).to_parquet(target, index=False)
-        project_dir = self._project_output_dir(target)
-        project_xml = self.style_service.qgis_project_xml(
-            project_name=target.stem,
-            data_source=self._relative_project_data_source(project_dir, target),
-            layer_specs=layer_specs,
-            bounds=merge_bounds(all_bounds),
-        )
-        project_xml = self._project_xml_from_template(
-            gpkg_path=target,
-            project_dir=project_dir,
-            project_name=target.stem,
-            generated_project_xml=project_xml,
-        )
-        self._write_qgis_project_files(target, project_xml)
         return target
 
     def _write_metadata_tables(
@@ -319,13 +219,6 @@ class ExportService:
             ).to_sql("grasp_qgis_project", conn, if_exists="replace", index=False)
             conn.commit()
 
-    def _selected_source(self, dataset_id: str):
-        sources = self.repository.list_sources(dataset_id)
-        for source in sources:
-            if source.is_selected:
-                return source
-        return sources[0] if sources else None
-
     def _write_qgis_project_files(self, gpkg_path: Path, project_xml: str) -> None:
         qgs_path, qgz_path = self._project_output_paths(gpkg_path)
         qgs_path.parent.mkdir(parents=True, exist_ok=True)
@@ -424,10 +317,6 @@ class ExportService:
         except ValueError:
             return export_path.resolve().as_posix()
 
-    def _dataset_subset_string(self, dataset_id: str) -> str:
-        escaped_dataset_id = dataset_id.replace("'", "''")
-        return f"\"dataset_id\" = '{escaped_dataset_id}'"
-
     def _style_for_dataset(self, dataset: DatasetRecord, *, group_name: str) -> LayerStyle:
         stored = self.repository.get_style(dataset.dataset_id)
         if stored is not None:
@@ -444,18 +333,6 @@ class ExportService:
         elif str(gdf.crs).upper() != "EPSG:4326":
             gdf = gdf.to_crs(epsg=4326)
         return gdf
-
-
-def _coerce_value(value):
-    if value is None:
-        return None
-    if hasattr(value, "item"):
-        try:
-            return value.item()
-        except Exception:
-            return str(value)
-    return value
-
 
 def cast_style(value: object) -> LayerStyle:
     if isinstance(value, LayerStyle):

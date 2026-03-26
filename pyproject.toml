@@ -36,5 +36,5 @@ package-dir = {"" = "src"}
 where = ["src"]
 
 [tool.setuptools.package-data]
-grasp = ["ui/assets/*.html"]
+grasp = ["ui/assets/*.html", "ui/assets/*.svg"]
 
