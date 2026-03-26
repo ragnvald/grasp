@@ -2,6 +2,7 @@
 
 import json
 import unittest
+from unittest.mock import patch
 
 import requests
 
@@ -224,7 +225,7 @@ class IntelligenceTests(unittest.TestCase):
         self.assertNotIn("supports that interpretation", enriched.suggested_description.lower())
 
     def test_default_openai_model_constant(self) -> None:
-        self.assertEqual(DEFAULT_OPENAI_MODEL, "gpt-4o-mini")
+        self.assertEqual(DEFAULT_OPENAI_MODEL, "gpt-5.2")
 
     def test_duckduckgo_search_disables_remote_after_first_failed_request(self) -> None:
         provider = DuckDuckGoSearchProvider(
@@ -362,6 +363,23 @@ class IntelligenceTests(unittest.TestCase):
         self.assertTrue(third.suggested_title)
         self.assertTrue(provider.remote_disabled)
         self.assertEqual(session.calls, 2)
+        self.assertIn("temporarily disabled", provider.last_error_message)
+
+    def test_openai_provider_reenables_after_backoff_window(self) -> None:
+        provider = OpenAIClassificationProvider(api_key="test-key")
+        provider.remote_disabled = True
+        provider.remote_disabled_until = 10.0
+        provider.consecutive_failures = 2
+        provider.last_error_message = "Temporary network failure."
+
+        with patch("grasp.intelligence.providers.monotonic", return_value=20.0):
+            available, message = provider.remote_availability_status()
+
+        self.assertTrue(available)
+        self.assertIn("OpenAI is available with model", message)
+        self.assertFalse(provider.remote_disabled)
+        self.assertEqual(provider.consecutive_failures, 0)
+        self.assertEqual(provider.last_error_message, "")
 
     def test_openai_provider_reports_missing_api_key_status(self) -> None:
         provider = OpenAIClassificationProvider()
@@ -506,8 +524,13 @@ class IntelligenceTests(unittest.TestCase):
         messages = session.last_json["messages"]
         system_prompt = messages[0]["content"]
         self.assertTrue(system_prompt.startswith("Managed data language context: not set."))
+        self.assertIn("minimum_group_count, maximum_group_count, average_group_size, and soft_max_group_size", system_prompt)
+        self.assertIn("Stay within the minimum_group_count to maximum_group_count range", system_prompt)
+        self.assertIn("write generic group names in that language", system_prompt)
+        self.assertIn("Do not group primarily by source document headings", system_prompt)
         self.assertIn("Translate or interpret non-English titles", system_prompt)
         self.assertIn("group by subject matter, not by shared language", system_prompt)
+        self.assertIn("Do not create near-duplicate group names", system_prompt)
         self.assertIn("suggested_group as a hint, not a hard constraint", system_prompt)
         self.assertIn("must not be grouped under Protected Area", system_prompt)
         self.assertIn("Risco de incandio e queimadas extremo", system_prompt)
@@ -556,6 +579,44 @@ class IntelligenceTests(unittest.TestCase):
         self.assertTrue(system_prompt.startswith("Managed data language context: Portuguese."))
         self.assertIn("Use that language context early when interpreting terms.", system_prompt)
 
+    def test_openai_group_datasets_prompt_requests_group_names_in_managed_language(self) -> None:
+        session = _CapturingSession(
+            {
+                "choices": [
+                    {
+                        "message": {
+                            "content": json.dumps(
+                                {
+                                    "groups": [
+                                        {"name": "Areas Protegidas", "dataset_ids": ["a", "b"]},
+                                    ]
+                                }
+                            )
+                        }
+                    }
+                ]
+            }
+        )
+        provider = OpenAIClassificationProvider(
+            api_key="test-key",
+            managed_data_language="Portuguese",
+            fallback=HeuristicClassificationProvider(),
+            session=session,
+        )
+
+        provider.group_datasets(
+            [
+                DatasetRecord(dataset_id="a", source_path="D:/data/a.geojson", source_format="geojson", layer_name="Parque Nacional"),
+                DatasetRecord(dataset_id="b", source_path="D:/data/b.geojson", source_format="geojson", layer_name="Reserva Especial"),
+            ],
+            2,
+        )
+
+        self.assertIsNotNone(session.last_json)
+        system_prompt = session.last_json["messages"][0]["content"]
+        self.assertTrue(system_prompt.startswith("Managed data language context: Portuguese."))
+        self.assertIn("write generic group names in that language", system_prompt)
+
     def test_openai_group_datasets_payload_includes_local_semantic_hints(self) -> None:
         session = _CapturingSession(
             {
@@ -601,13 +662,18 @@ class IntelligenceTests(unittest.TestCase):
 
         self.assertIsNotNone(session.last_json)
         payload = json.loads(session.last_json["messages"][1]["content"])
+        self.assertEqual(payload["target_group_count"], 2)
+        self.assertEqual(payload["minimum_group_count"], 2)
+        self.assertEqual(payload["maximum_group_count"], 2)
+        self.assertEqual(payload["average_group_size"], 1.0)
+        self.assertEqual(payload["soft_max_group_size"], 5)
         datasets_by_id = {item["dataset_id"]: item for item in payload["datasets"]}
         self.assertEqual(datasets_by_id["a"]["local_theme_hint"], "risk")
         self.assertEqual(datasets_by_id["a"]["local_group_hint"], "risk")
         self.assertIn("queimadas", datasets_by_id["a"]["local_keywords"])
         self.assertEqual(datasets_by_id["b"]["local_group_hint"], "protected-area")
 
-    def test_openai_group_datasets_replaces_overbroad_single_group_with_heuristic_grouping(self) -> None:
+    def test_openai_group_datasets_returns_raw_assignments_for_caller_review_when_broad(self) -> None:
         session = _CapturingSession(
             {
                 "choices": [
@@ -643,10 +709,9 @@ class IntelligenceTests(unittest.TestCase):
             3,
         )
 
-        self.assertGreater(len(set(assignments.values())), 1)
-        self.assertEqual(assignments["a"], "Risk")
-        self.assertIn(assignments["e"], {"Administrative", "Distritos Administrativos"})
-        self.assertNotEqual(assignments["a"], "Protected Area")
+        self.assertEqual(len(set(assignments.values())), 1)
+        self.assertEqual(assignments["a"], "Protected Area")
+        self.assertEqual(assignments["e"], "Protected Area")
 
     def test_openai_initial_classification_payload_is_token_light_by_default(self) -> None:
         dataset = DatasetRecord(

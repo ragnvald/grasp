@@ -2,6 +2,7 @@
 
 from dataclasses import replace
 from datetime import datetime
+import math
 from pathlib import Path
 import shutil
 import traceback
@@ -29,12 +30,13 @@ from grasp.export.service import ExportService
 from grasp.ingest.service import IngestService, MAX_AUTO_VISIBLE_DATASETS, MAX_AUTO_VISIBLE_FEATURES
 from grasp.intelligence.providers import (
     DEFAULT_OPENAI_MODEL,
+    DEFAULT_OPENAI_TIMEOUT_S,
     DuckDuckGoSearchProvider,
     HeuristicClassificationProvider,
     OpenAIClassificationProvider,
 )
 from grasp.intelligence.service import IntelligenceService, SearchService
-from grasp.models import DatasetUnderstanding
+from grasp.models import DatasetRecord, DatasetUnderstanding
 from grasp.name_simplification import suggest_simplified_dataset_name
 from grasp.qt_compat import (
     QAction,
@@ -95,8 +97,9 @@ from grasp.workspace import catalog_exists, display_group_name, ensure_workspace
 
 
 REGROUP_OTHERS_GROUP_NAME = "Others"
-REGROUP_HINT_PREPARATION_TIMEOUT_S = 120.0
-REGROUP_TOTAL_TIMEOUT_S = 120.0
+REGROUP_HINT_PREPARATION_TIMEOUT_S = 240.0
+REGROUP_TOTAL_TIMEOUT_S = 240.0
+REGROUP_GROUP_COUNT_TOLERANCE_RATIO = 0.10
 INITIAL_HEURISTIC_CLASSIFICATION_TIMEOUT_S = 60.0
 REVIEW_JOB_STALE_LOCK_TIMEOUT_S = 300.0
 REMOTE_AI_REQUEST_COOLDOWN_S = 0.35
@@ -584,7 +587,8 @@ class MainWindow(QMainWindow):
         selection_layout.setSpacing(8)
         self.selection_help_label = QLabel(
             "This checked working set drives steps 1, 3, and 4 below. "
-            "Use the group dropdown when you want the group buttons to target one specific group."
+            "It does not control the Map tab. "
+            "Use the group dropdown when you want the group buttons to target one specific catalog group."
         )
         self.selection_help_label.setWordWrap(True)
         selection_layout.addWidget(self.selection_help_label)
@@ -831,32 +835,31 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(TAB_PAGE_MARGIN_PX, TAB_PAGE_MARGIN_PX, TAB_PAGE_MARGIN_PX, TAB_PAGE_MARGIN_PX)
         layout.setSpacing(8)
 
-        controls_layout = QGridLayout()
-        controls_layout.setContentsMargins(0, 0, 0, 0)
-        controls_layout.setHorizontalSpacing(8)
-        controls_layout.setVerticalSpacing(6)
+        self.map_controls_layout = QHBoxLayout()
+        self.map_controls_layout.setContentsMargins(0, 0, 0, 0)
+        self.map_controls_layout.setSpacing(8)
 
-        refresh_button = QPushButton("Refresh Map")
-        refresh_button.clicked.connect(self.refresh_map)
-        controls_layout.addWidget(refresh_button, 0, 0)
+        self.refresh_map_button = QPushButton("Refresh Map")
+        self.refresh_map_button.clicked.connect(self.refresh_map)
+        self.map_controls_layout.addWidget(self.refresh_map_button, 0, Qt.AlignLeft)
+        self.map_controls_layout.addStretch(1)
 
-        controls_layout.addWidget(QLabel("Scope"), 1, 0)
+        self.map_scope_label = QLabel("Scope")
+        self.map_controls_layout.addWidget(self.map_scope_label, 0, Qt.AlignRight)
         self.map_scope_combo = QComboBox()
         self.map_scope_combo.addItem("Visible on map", "visible")
         self.map_scope_combo.addItem("Show all", "all")
         self.map_scope_combo.currentIndexChanged.connect(lambda _index: self.refresh_map())
-        controls_layout.addWidget(self.map_scope_combo, 1, 1)
-
-        controls_layout.setColumnStretch(0, 1)
-        controls_layout.setColumnStretch(1, 1)
-        layout.addLayout(controls_layout)
+        self.map_controls_layout.addWidget(self.map_scope_combo, 0, Qt.AlignRight)
+        layout.addLayout(self.map_controls_layout)
 
         self.map_summary = QLabel("No project loaded.")
         self.map_summary.setWordWrap(True)
         layout.addWidget(self.map_summary)
 
         self.map_style_note = QLabel(
-            "Generate styles from dataset names and descriptions when you want a coherent map preview and QGIS-ready export. "
+            "Generate styles in Manage data applies only to the checked working set. "
+            "The Map tab can still show more layers depending on the map scope above. "
             "If possible source styling is detected during import, GRASP warns before generating new AI-driven styling."
         )
         self.map_style_note.setWordWrap(True)
@@ -1211,7 +1214,7 @@ class MainWindow(QMainWindow):
 
     def save_settings(self) -> None:
         try:
-            timeout_s = float(self.settings_timeout_edit.text().strip() or "20")
+            timeout_s = float(self.settings_timeout_edit.text().strip() or str(DEFAULT_OPENAI_TIMEOUT_S))
             max_failures = int(self.settings_failures_edit.text().strip() or "2")
             search_timeout_s = float(self.settings_search_timeout_edit.text().strip() or "4")
             search_max_failures = int(self.settings_search_failures_edit.text().strip() or "1")
@@ -1240,7 +1243,7 @@ class MainWindow(QMainWindow):
             )
             return
         self.current_settings = AppSettings(
-            openai_model=self.settings_model_combo.currentText().strip() or MODEL_OPTIONS[0],
+            openai_model=self.settings_model_combo.currentText().strip() or DEFAULT_OPENAI_MODEL,
             openai_api_key=self.settings_api_key_edit.text().strip(),
             openai_endpoint=self.settings_endpoint_edit.text().strip(),
             managed_data_language=normalize_managed_data_language(self.settings_data_language_combo.currentData()),
@@ -2003,7 +2006,7 @@ class MainWindow(QMainWindow):
         group_dataset_count = len(self._dataset_ids_for_group_id(selected_group_id))
         self.selection_scope_status_label.setText(
             f"Working set: {checked_count} checked dataset(s), divided between {checked_group_count} {group_label}. "
-            f"Group shortcut target: {display_group_name(selected_group_id)} ({group_dataset_count} dataset(s))."
+            f"Dropdown group: {display_group_name(selected_group_id)} ({group_dataset_count} dataset(s) in catalog)."
         )
 
     def _configure_manage_data_buttons(self, buttons: list[QPushButton]) -> None:
@@ -2033,7 +2036,7 @@ class MainWindow(QMainWindow):
         value, ok = QInputDialog.getInt(
             self,
             "AI regroup",
-            f"Target number of groups for {scope_label}",
+            f"Target number of groups for {scope_label}\n(final result should stay within +/-10%)",
             default_value,
             1,
             max(1, dataset_count),
@@ -2041,6 +2044,119 @@ class MainWindow(QMainWindow):
         if not ok:
             return 0
         return int(value)
+
+    def _suggest_regroup_retry_target(self, dataset_count: int, target_group_count: int) -> int:
+        dataset_total = max(1, int(dataset_count or 0))
+        target = max(1, min(int(target_group_count or 1), dataset_total))
+        if target >= dataset_total:
+            return target
+        return min(dataset_total, max(target + 2, int(math.ceil(target * 1.3))))
+
+    def _regroup_group_count_bounds(self, requested_target_group_count: int, dataset_count: int) -> tuple[int, int]:
+        dataset_total = max(1, int(dataset_count or 0))
+        target = max(1, min(int(requested_target_group_count or 1), dataset_total))
+        lower_bound = max(1, min(dataset_total, int(math.ceil(target * (1.0 - REGROUP_GROUP_COUNT_TOLERANCE_RATIO)))))
+        upper_bound = max(lower_bound, min(dataset_total, int(math.floor(target * (1.0 + REGROUP_GROUP_COUNT_TOLERANCE_RATIO)))))
+        return lower_bound, upper_bound
+
+    def _group_count_for_assignments(self, assignments: dict[str, str]) -> int:
+        return len(
+            {
+                str(group_name).strip()
+                for group_name in assignments.values()
+                if str(group_name).strip()
+            }
+        )
+
+    def _resolve_regroup_group_count_variance(
+        self,
+        assignments: dict[str, str],
+        requested_target_group_count: int,
+    ) -> dict[str, object] | None:
+        if not assignments or requested_target_group_count <= 0:
+            return None
+        actual_group_count = self._group_count_for_assignments(assignments)
+        lower_bound, upper_bound = self._regroup_group_count_bounds(requested_target_group_count, len(assignments))
+        if lower_bound <= actual_group_count <= upper_bound:
+            return None
+
+        tolerance_text = f"{lower_bound}-{upper_bound}"
+        if actual_group_count > upper_bound:
+            message_box = QMessageBox(self)
+            message_box.setIcon(QMessageBox.Question)
+            message_box.setWindowTitle("Regroup wants more groups")
+            message_box.setText(
+                f"AI regroup proposed {actual_group_count} groups for a requested target of {requested_target_group_count}."
+            )
+            message_box.setInformativeText(
+                f"The allowed range is {tolerance_text} groups (+/-10%). "
+                f"Retry with {upper_bound} groups to stay within that range, or rerun with {actual_group_count} groups if you want to follow the AI split."
+            )
+            within_button = message_box.addButton(f"Stay Within {tolerance_text}", QMessageBox.AcceptRole)
+            higher_button = message_box.addButton(f"Go Higher ({actual_group_count})", QMessageBox.ActionRole)
+            cancel_button = message_box.addButton(QMessageBox.Cancel)
+            message_box.setDefaultButton(within_button)
+            message_box.exec()
+            clicked = message_box.clickedButton()
+            if clicked is higher_button:
+                return {
+                    "action": "retry",
+                    "target_group_count": actual_group_count,
+                    "message": (
+                        f"AI regroup proposed {actual_group_count} groups for requested target {requested_target_group_count}. "
+                        f"Retrying with the higher AI-suggested target of {actual_group_count} groups."
+                    ),
+                }
+            if clicked is within_button:
+                return {
+                    "action": "retry",
+                    "target_group_count": upper_bound,
+                    "message": (
+                        f"AI regroup proposed {actual_group_count} groups for requested target {requested_target_group_count}. "
+                        f"Retrying within the allowed +/-10% range at {upper_bound} groups."
+                    ),
+                }
+            return {
+                "action": "cancel",
+                "message": "AI regroup preview cancelled.",
+            }
+
+        message_box = QMessageBox(self)
+        message_box.setIcon(QMessageBox.Question)
+        message_box.setWindowTitle("Regroup produced too few groups")
+        message_box.setText(
+            f"AI regroup proposed {actual_group_count} groups for a requested target of {requested_target_group_count}."
+        )
+        message_box.setInformativeText(
+            f"The allowed range is {tolerance_text} groups (+/-10%). "
+            f"Retry with {lower_bound} groups to stay closer to your requested range, or review the current proposal anyway."
+        )
+        within_button = message_box.addButton(f"Retry at {lower_bound}", QMessageBox.AcceptRole)
+        review_button = message_box.addButton("Review Current Proposal", QMessageBox.ActionRole)
+        cancel_button = message_box.addButton(QMessageBox.Cancel)
+        message_box.setDefaultButton(within_button)
+        message_box.exec()
+        clicked = message_box.clickedButton()
+        if clicked is within_button:
+            return {
+                "action": "retry",
+                "target_group_count": lower_bound,
+                "message": (
+                    f"AI regroup proposed {actual_group_count} groups for requested target {requested_target_group_count}. "
+                    f"Retrying within the allowed +/-10% range at {lower_bound} groups."
+                ),
+            }
+        if clicked is review_button:
+            return {
+                "action": "continue",
+                "message": (
+                    f"Reviewing the current {actual_group_count}-group proposal even though it is outside the allowed +/-10% range."
+                ),
+            }
+        return {
+            "action": "cancel",
+            "message": "AI regroup preview cancelled.",
+        }
 
     def _datasets_with_source_style(self, dataset_ids: list[str]):
         if self.repository is None:
@@ -2427,31 +2543,40 @@ class MainWindow(QMainWindow):
             return
         if self.map_bridge is not None:
             self.map_bridge.set_scope(map_scope)
+        map_scope_label = self.map_scope_combo.currentText().strip() or "Visible on map"
         if self._review_job_running:
             self.map_summary.setText(
-                f"Map layers available: {len(map_dataset_ids)} of {len(datasets)} | Checked for batch actions: {checked_count} | Styled: {style_count}. "
+                f"Map layers in current scope ({map_scope_label}): {len(map_dataset_ids)} of {len(datasets)} | "
+                f"Checked working set: {checked_count} | Styled datasets in catalog: {style_count}. "
                 "Map loading is paused while dataset processing is running."
             )
             return
         if not self._is_map_tab_active():
             self.map_summary.setText(
-                f"Map layers available: {len(map_dataset_ids)} of {len(datasets)} | Checked for batch actions: {checked_count} | Styled: {style_count}. "
+                f"Map layers in current scope ({map_scope_label}): {len(map_dataset_ids)} of {len(datasets)} | "
+                f"Checked working set: {checked_count} | Styled datasets in catalog: {style_count}. "
                 "Open the Map tab to load the map in browse mode."
             )
             return
         self._ensure_map_ready()
         if WEBENGINE_AVAILABLE and not self._map_page_ready:
             self.map_summary.setText(
-                f"Map layers available: {len(map_dataset_ids)} of {len(datasets)} | Checked for batch actions: {checked_count} | Styled: {style_count}. "
+                f"Map layers in current scope ({map_scope_label}): {len(map_dataset_ids)} of {len(datasets)} | "
+                f"Checked working set: {checked_count} | Styled datasets in catalog: {style_count}. "
                 "Preparing the embedded map renderer..."
             )
             return
         if self.map_bridge is not None:
             self.map_bridge.set_scope(map_scope)
-        scope_note = "using datasets marked Visible on map." if map_scope == "visible" else "showing all datasets."
+        scope_note = (
+            "using datasets marked Visible on map."
+            if map_scope == "visible"
+            else "showing all datasets."
+        )
         self.map_summary.setText(
-            f"Map layers available: {len(map_dataset_ids)} of {len(datasets)} | Checked for batch actions: {checked_count} | Styled: {style_count}. "
-            f"Browse mode loads one layer at a time by default, {scope_note}"
+            f"Map layers in current scope ({map_scope_label}): {len(map_dataset_ids)} of {len(datasets)} | "
+            f"Checked working set: {checked_count} | Styled datasets in catalog: {style_count}. "
+            f"The map scope is independent from the checked working set. Browse mode loads one layer at a time by default, {scope_note}"
         )
         if self.map_bridge is not None:
             self.map_bridge.publish_state()
@@ -2833,17 +2958,25 @@ class MainWindow(QMainWindow):
         worker.signals.status.connect(self.review_job_status.setText)
         worker.signals.progress.connect(lambda value, token=progress_token: self._update_background_activity_progress(token, value))
         worker.signals.progress.connect(self.review_progress.setValue)
-        worker.signals.result.connect(lambda proposal, token=progress_token: self._schedule_regroup_preview(token, proposal))
+        worker.signals.result.connect(
+            lambda proposal, token=progress_token, scope_label=scope_label: self._schedule_regroup_preview(
+                token,
+                proposal,
+                scope_label,
+            )
+        )
         worker.signals.error.connect(lambda message, token=progress_token: self.on_background_error(message, token))
         worker.signals.finished.connect(lambda token=progress_token: self._release_worker(token))
         self.thread_pool.start(worker)
 
-    def _schedule_regroup_preview(self, token: int, proposal) -> None:
-        QTimer.singleShot(0, lambda token=token, proposal=proposal: self._complete_regroup_preview(token, proposal))
+    def _schedule_regroup_preview(self, token: int, proposal, scope_label: str) -> None:
+        QTimer.singleShot(0, lambda token=token, proposal=proposal, scope_label=scope_label: self._complete_regroup_preview(token, proposal, scope_label))
 
-    def _complete_regroup_preview(self, token: int, proposal) -> None:
+    def _complete_regroup_preview(self, token: int, proposal, scope_label: str = "selected datasets") -> None:
         try:
             assignments = dict((proposal or {}).get("assignments") or {})
+            dataset_ids = list((proposal or {}).get("dataset_ids") or assignments.keys())
+            requested_target_group_count = int((proposal or {}).get("target_group_count") or 0)
             if not assignments:
                 self._update_background_activity_progress(token, 100)
                 self.review_progress.setValue(100)
@@ -2851,6 +2984,27 @@ class MainWindow(QMainWindow):
                 self.statusBar().showMessage("AI regroup produced no assignments.", 5000)
                 self._on_review_job_finished("AI regroup produced no assignments.")
                 return
+            regroup_decision = self._resolve_regroup_group_count_variance(assignments, requested_target_group_count)
+            if regroup_decision is not None:
+                decision_message = str(regroup_decision.get("message") or "").strip()
+                if decision_message:
+                    self.append_activity_log(decision_message, activity="AI Regroup")
+                    self.statusBar().showMessage(decision_message, 5000)
+                action = str(regroup_decision.get("action") or "").strip().lower()
+                if action == "retry":
+                    next_target_group_count = max(1, int(regroup_decision.get("target_group_count") or requested_target_group_count or 1))
+                    self._update_background_activity_progress(token, 100)
+                    self.review_progress.setValue(100)
+                    self._finish_background_activity(token, decision_message or "Retrying AI regroup with a new group target.")
+                    self._on_review_job_finished(decision_message or "Retrying AI regroup with a new group target.")
+                    self._start_regroup_preview_job(dataset_ids, next_target_group_count, scope_label=scope_label)
+                    return
+                if action == "cancel":
+                    self._update_background_activity_progress(token, 100)
+                    self.review_progress.setValue(100)
+                    self._finish_background_activity(token, decision_message or "AI regroup preview cancelled.")
+                    self._on_review_job_finished(decision_message or "AI regroup preview cancelled.")
+                    return
             accepted = self._confirm_regroup_assignments(assignments)
             if not accepted:
                 self.append_activity_log("Preview cancelled. Group assignments were not applied.", activity="AI Regroup")
@@ -3232,15 +3386,14 @@ class MainWindow(QMainWindow):
         regroup_started_at = monotonic()
         prepared_dataset_ids: set[str] = set()
         timed_out_dataset_ids: list[str] = []
-        refreshed_hint_count = 0
-        hint_updates: list[tuple[str, object]] = []
         total = len(dataset_ids)
         if progress_callback:
             progress_callback(0)
         if status_callback:
             status_callback(
                 f"Regroup has a total time budget of {self._format_elapsed_seconds(REGROUP_TOTAL_TIMEOUT_S)}. "
-                f"Preparing grouping hints for {total} dataset(s). "
+                f"Preparing fresh regroup input for {total} dataset(s). "
+                "Current group assignments and cached AI grouping hints will be ignored for this run. "
                 f"Any remaining dataset(s) after that will go to {REGROUP_OTHERS_GROUP_NAME}."
             )
         for index, dataset_id in enumerate(dataset_ids, start=1):
@@ -3256,36 +3409,27 @@ class MainWindow(QMainWindow):
             dataset = self.repository.get_dataset(dataset_id)
             if dataset is None:
                 continue
-            needs_hint_refresh = not dataset.display_name_ai and not dataset.description_ai and not dataset.suggested_group
-            if needs_hint_refresh:
-                if status_callback:
-                    status_callback(f"Preparing grouping hints {index}/{total}: {dataset.preferred_name}")
-                understanding = self.heuristic_intelligence_service.classify(dataset)
-                hint_updates.append((dataset_id, understanding))
-                dataset.display_name_ai = understanding.suggested_title
-                dataset.description_ai = understanding.suggested_description
-                dataset.suggested_group = understanding.suggested_group
-                dataset.ai_confidence = float(understanding.confidence or 0.0)
-                refreshed_hint_count += 1
-            datasets.append(dataset)
+            if status_callback:
+                status_callback(
+                    f"Preparing regroup input {index}/{total}: {dataset.display_name_user.strip() or dataset.default_name}"
+                )
+            datasets.append(self._dataset_for_regroup(dataset))
             prepared_dataset_ids.add(dataset.dataset_id)
             if progress_callback:
                 progress_callback(int((index / max(total, 1)) * 35))
 
-        if hint_updates:
-            if status_callback:
-                status_callback(f"Persisting {len(hint_updates)} grouping hint update(s) to the catalog.")
-            self.repository.upsert_understandings_bulk(hint_updates)
-
         if status_callback and datasets:
-            reused_count = max(0, len(datasets) - refreshed_hint_count)
             status_callback(
-                f"Grouping hints ready for {len(datasets)} dataset(s): "
-                f"{refreshed_hint_count} refreshed, {reused_count} reused."
+                f"Fresh regroup input ready for {len(datasets)} dataset(s). "
+                "User-entered names and descriptions were kept; cached AI grouping hints were ignored."
             )
 
         if not datasets and not timed_out_dataset_ids:
-            return {"assignments": {}}
+            return {
+                "assignments": {},
+                "dataset_ids": list(dataset_ids),
+                "target_group_count": int(target_group_count),
+            }
 
         assignments: dict[str, str] = {}
         if datasets:
@@ -3357,7 +3501,20 @@ class MainWindow(QMainWindow):
                 )
             assignments = {dataset_id: REGROUP_OTHERS_GROUP_NAME for dataset_id in timed_out_dataset_ids}
 
-        return {"assignments": assignments}
+        return {
+            "assignments": assignments,
+            "dataset_ids": list(dataset_ids),
+            "target_group_count": int(target_group_count),
+        }
+
+    def _dataset_for_regroup(self, dataset: DatasetRecord) -> DatasetRecord:
+        return replace(
+            dataset,
+            display_name_ai="",
+            description_ai="",
+            suggested_group="",
+            ai_confidence=0.0,
+        )
 
     def _apply_regroup_assignments(
         self,
@@ -3434,26 +3591,121 @@ class MainWindow(QMainWindow):
         classifier = getattr(self.intelligence_service, "classifier", None)
         availability_checker = getattr(classifier, "remote_availability_status", None)
         consume_last_error_message = getattr(classifier, "consume_last_error_message", None)
+        broad_checker = getattr(classifier, "assignments_look_too_broad", None)
+        if not callable(broad_checker):
+            broad_checker = getattr(getattr(self.heuristic_intelligence_service, "classifier", None), "assignments_look_too_broad", None)
+
+        remote_available = True
+        remote_status_message = ""
         if callable(availability_checker):
-            remote_available, message = availability_checker()
+            remote_available, remote_status_message = availability_checker()
+            if status_callback and remote_status_message:
+                if remote_available:
+                    status_callback(f"{remote_status_message} Attempting remote AI grouping.")
+                else:
+                    status_callback(f"{remote_status_message} Using local grouping fallback.")
+
+        grouping_started_at = monotonic()
+
+        def _remaining_timeout() -> float | None:
+            if timeout_s is None:
+                return None
+            return max(0.0, timeout_s - (monotonic() - grouping_started_at))
+
+        def _run_grouping(target: int) -> dict[str, str]:
+            effective_timeout_s = _remaining_timeout()
             if not remote_available:
-                if status_callback and message:
-                    status_callback(f"{message} Using local grouping fallback.")
                 return self.heuristic_intelligence_service.group_datasets(
                     datasets,
-                    target_group_count,
-                    timeout_s=timeout_s,
+                    target,
+                    timeout_s=effective_timeout_s,
                 )
-        assignments = self._group_datasets_with_timeout(
-            datasets,
-            target_group_count,
-            timeout_s=timeout_s,
-        )
-        if callable(consume_last_error_message):
-            last_error = str(consume_last_error_message() or "").strip()
-            if last_error and status_callback:
-                status_callback(f"{last_error} Using local grouping fallback where needed.")
-        return assignments
+            return self._group_datasets_with_timeout(
+                datasets,
+                target,
+                timeout_s=effective_timeout_s,
+            )
+
+        def _consume_grouping_error() -> None:
+            if callable(consume_last_error_message):
+                last_error = str(consume_last_error_message() or "").strip()
+                if last_error and status_callback:
+                    status_callback(f"{last_error} Using local grouping fallback where needed.")
+
+        def _group_count(group_assignments: dict[str, str]) -> int:
+            return len({str(name).strip() for name in group_assignments.values() if str(name).strip()})
+
+        assignments = _run_grouping(target_group_count)
+        _consume_grouping_error()
+
+        if not assignments or not callable(broad_checker):
+            return assignments
+        current_target = int(target_group_count)
+        current_group_count = _group_count(assignments)
+        current_still_broad = broad_checker(datasets, assignments, current_target)
+        if not current_still_broad:
+            return assignments
+        best_assignments = assignments
+        best_group_count = current_group_count
+        best_target = current_target
+        best_is_broad = current_still_broad
+        attempt_count = 1
+
+        while best_is_broad and attempt_count < 3:
+            retry_target = self._suggest_regroup_retry_target(len(datasets), best_target)
+            if retry_target <= best_target:
+                break
+            remaining_timeout_s = _remaining_timeout()
+            if remaining_timeout_s is not None and remaining_timeout_s < 5.0:
+                if status_callback:
+                    status_callback(
+                        "Grouping result still looks too broad, but there is not enough regroup time left to retry with more groups."
+                    )
+                break
+            if status_callback:
+                status_callback(
+                    f"Grouping result still looks too broad at target {best_target} group(s). "
+                    f"Retrying with suggested target {retry_target} group(s)."
+                )
+            retry_assignments = _run_grouping(retry_target)
+            _consume_grouping_error()
+            if not retry_assignments:
+                if status_callback:
+                    status_callback("Retry with more groups returned no assignments. Keeping the best earlier grouping result.")
+                break
+
+            attempt_count += 1
+            retry_group_count = _group_count(retry_assignments)
+            retry_still_broad = broad_checker(datasets, retry_assignments, retry_target)
+            if not retry_still_broad:
+                if status_callback:
+                    status_callback(f"Using regroup retry result with target {retry_target} group(s).")
+                return retry_assignments
+
+            if retry_group_count > best_group_count:
+                best_assignments = retry_assignments
+                best_group_count = retry_group_count
+                best_target = retry_target
+                best_is_broad = True
+                if status_callback:
+                    status_callback(
+                        f"Retry at target {retry_target} improved coverage to {retry_group_count} group(s), "
+                        "but it still looks too broad."
+                    )
+                continue
+
+            if status_callback:
+                status_callback(
+                    f"Retry at target {retry_target} did not improve the grouping spread beyond {best_group_count} group(s)."
+                )
+            break
+
+        if status_callback and best_is_broad:
+            status_callback(
+                f"Grouping still looks too broad after {attempt_count} AI attempt(s). "
+                f"Keeping the best available result with {best_group_count} group(s) for review."
+            )
+        return best_assignments
 
     def on_background_error(self, message: str, progress_token: int | None = None) -> None:
         self.append_activity_log(message)

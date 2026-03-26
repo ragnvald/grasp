@@ -114,32 +114,60 @@ class CatalogRepository:
                 continue
             conn.execute(f"ALTER TABLE datasets ADD COLUMN {column_name} {column_spec}")
 
-    def ensure_group(self, group_id: str, name: str | None = None) -> None:
+    def _group_equivalence_keys(self, group_id: str) -> set[str]:
         normalized = sanitize_group_id(group_id)
+        keys = {normalized}
+        if normalized == "ungrouped":
+            return keys
+        if "-" in normalized:
+            prefix, token = normalized.rsplit("-", 1)
+            prefix = f"{prefix}-"
+        else:
+            prefix = ""
+            token = normalized
+        if token.endswith("ies") and len(token) > 4 and token not in {"series", "species"}:
+            keys.add(f"{prefix}{token[:-3]}y")
+        if token.endswith(("sses", "shes", "ches", "xes", "zes")) and len(token) > 4:
+            keys.add(f"{prefix}{token[:-2]}")
+        if token.endswith("s") and len(token) > 3 and not token.endswith(("ss", "is", "us")):
+            keys.add(f"{prefix}{token[:-1]}")
+        return {key for key in keys if key}
+
+    def _find_equivalent_group_id(self, conn: sqlite3.Connection, group_id: str) -> str | None:
+        normalized = sanitize_group_id(group_id)
+        rows = conn.execute("SELECT id FROM groups ORDER BY sort_order, name").fetchall()
+        for row in rows:
+            existing_group_id = str(row["id"])
+            if existing_group_id == normalized:
+                return existing_group_id
+        candidate_keys = self._group_equivalence_keys(normalized)
+        for row in rows:
+            existing_group_id = str(row["id"])
+            if candidate_keys.intersection(self._group_equivalence_keys(existing_group_id)):
+                return existing_group_id
+        return None
+
+    def _ensure_group_with_connection(self, conn: sqlite3.Connection, group_id: str, name: str | None = None) -> str:
+        normalized = sanitize_group_id(group_id)
+        existing_group_id = self._find_equivalent_group_id(conn, normalized)
+        if existing_group_id:
+            return existing_group_id
+        sort_order = conn.execute("SELECT COALESCE(MAX(sort_order), -1) + 1 FROM groups").fetchone()[0]
+        conn.execute(
+            "INSERT INTO groups (id, name, sort_order, created_at) VALUES (?, ?, ?, ?)",
+            (normalized, name or display_group_name(normalized), sort_order, _utc_now()),
+        )
+        return normalized
+
+    def ensure_group(self, group_id: str, name: str | None = None) -> str:
         with closing(self._connect()) as conn:
-            row = conn.execute("SELECT id FROM groups WHERE id = ?", (normalized,)).fetchone()
-            if row:
-                return
-            sort_order = conn.execute("SELECT COALESCE(MAX(sort_order), -1) + 1 FROM groups").fetchone()[0]
-            conn.execute(
-                "INSERT INTO groups (id, name, sort_order, created_at) VALUES (?, ?, ?, ?)",
-                (normalized, name or display_group_name(normalized), sort_order, _utc_now()),
-            )
+            ensured_group_id = self._ensure_group_with_connection(conn, group_id, name)
             conn.commit()
+        return ensured_group_id
 
     def create_group(self, name: str) -> str:
-        group_id = sanitize_group_id(name)
-        base = group_id
-        suffix = 2
         with closing(self._connect()) as conn:
-            while conn.execute("SELECT 1 FROM groups WHERE id = ?", (group_id,)).fetchone():
-                group_id = f"{base}-{suffix}"
-                suffix += 1
-            sort_order = conn.execute("SELECT COALESCE(MAX(sort_order), -1) + 1 FROM groups").fetchone()[0]
-            conn.execute(
-                "INSERT INTO groups (id, name, sort_order, created_at) VALUES (?, ?, ?, ?)",
-                (group_id, name, sort_order, _utc_now()),
-            )
+            group_id = self._ensure_group_with_connection(conn, name, name)
             conn.commit()
         return group_id
 
@@ -464,18 +492,16 @@ class CatalogRepository:
                     str(row["dataset_id"]): sanitize_group_id(str(row["group_id"] or "ungrouped"))
                     for row in rows
                 }
-            if auto_assign_group:
-                for group_id in sorted(suggested_groups):
-                    conn.execute(
-                        """
-                        INSERT OR IGNORE INTO groups (id, name, sort_order, created_at)
-                        VALUES (
-                            ?, ?, (SELECT COALESCE(MAX(sort_order), -1) + 1 FROM groups), ?
-                        )
-                        """,
-                        (group_id, display_group_name(group_id), _utc_now()),
-                    )
+            resolved_suggested_groups = {
+                group_id: (
+                    self._ensure_group_with_connection(conn, group_id)
+                    if auto_assign_group
+                    else self._find_equivalent_group_id(conn, group_id) or group_id
+                )
+                for group_id in sorted(suggested_groups)
+            }
             for dataset_id, payload, suggested_title, suggested_description, confidence, suggested_group in normalized_updates:
+                resolved_group_id = resolved_suggested_groups.get(suggested_group, suggested_group)
                 updated_at = _utc_now()
                 conn.execute(
                     """
@@ -495,15 +521,15 @@ class CatalogRepository:
                         suggested_title,
                         suggested_description,
                         confidence,
-                        suggested_group,
+                        resolved_group_id,
                         updated_at,
                         dataset_id,
                     ),
                 )
-                if auto_assign_group and current_groups.get(dataset_id, "ungrouped") in {"", "ungrouped"} and suggested_group:
+                if auto_assign_group and current_groups.get(dataset_id, "ungrouped") in {"", "ungrouped"} and resolved_group_id:
                     conn.execute(
                         "UPDATE datasets SET group_id = ?, updated_at = ? WHERE dataset_id = ?",
-                        (suggested_group, updated_at, dataset_id),
+                        (resolved_group_id, updated_at, dataset_id),
                     )
             conn.commit()
         return len(normalized_updates)
@@ -622,17 +648,16 @@ class CatalogRepository:
         dataset = self.get_dataset(dataset_id)
         if not dataset or not dataset.suggested_group:
             return
-        self.ensure_group(dataset.suggested_group)
+        resolved_group_id = self.ensure_group(dataset.suggested_group)
         with closing(self._connect()) as conn:
             conn.execute(
                 "UPDATE datasets SET group_id = ?, updated_at = ? WHERE dataset_id = ?",
-                (dataset.suggested_group, _utc_now(), dataset_id),
+                (resolved_group_id, _utc_now(), dataset_id),
             )
             conn.commit()
 
     def assign_group(self, dataset_id: str, group_id: str) -> None:
-        normalized = sanitize_group_id(group_id or "ungrouped")
-        self.ensure_group(normalized)
+        normalized = self.ensure_group(group_id or "ungrouped")
         with closing(self._connect()) as conn:
             conn.execute(
                 "UPDATE datasets SET group_id = ?, updated_at = ? WHERE dataset_id = ?",
@@ -657,8 +682,7 @@ class CatalogRepository:
         normalized_assignments: list[tuple[str, str, str]] = []
         for dataset_id, group_name in assignments.items():
             display_name = str(group_name or "").strip() or "Ungrouped"
-            normalized_group_id = sanitize_group_id(display_name)
-            self.ensure_group(normalized_group_id, display_name)
+            normalized_group_id = self.ensure_group(display_name, display_name)
             normalized_assignments.append((dataset_id, normalized_group_id, display_name))
         if not normalized_assignments:
             return 0

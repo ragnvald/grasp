@@ -2,9 +2,11 @@
 
 from abc import ABC, abstractmethod
 import json
+import math
 import os
 from pathlib import Path
 import re
+from time import monotonic
 from typing import Iterable
 from urllib.parse import quote, urlparse
 
@@ -13,10 +15,11 @@ import requests
 from grasp.data_languages import display_managed_data_language, normalize_managed_data_language
 from grasp.models import DatasetRecord, DatasetUnderstanding, SourceCandidate
 
-DEFAULT_OPENAI_MODEL = "gpt-4o-mini"
+DEFAULT_OPENAI_MODEL = "gpt-5.2"
 DEFAULT_OPENAI_ENDPOINT = "https://api.openai.com/v1/chat/completions"
-DEFAULT_OPENAI_TIMEOUT_S = 20.0
+DEFAULT_OPENAI_TIMEOUT_S = 45.0
 DEFAULT_OPENAI_MAX_CONSECUTIVE_FAILURES = 2
+REMOTE_AI_FAILURE_BACKOFF_S = 30.0
 DEFAULT_SEARCH_TIMEOUT_S = 4.0
 DEFAULT_SEARCH_MAX_CONSECUTIVE_FAILURES = 1
 DEFAULT_SEARCH_TARGET_CANDIDATES = 5
@@ -324,14 +327,20 @@ class HeuristicClassificationProvider(ClassificationProvider):
             grouped.setdefault(group_name, []).append(dataset.dataset_id)
         if not grouped:
             return False
-        average_group_size = max(1, (len(datasets) + target - 1) // target)
+        average_group_size = max(1.0, len(datasets) / max(1, target))
+        review_threshold = max(6, int(math.ceil(average_group_size * 1.5)))
+        soft_max_group_size = max(5, int(math.ceil(average_group_size * 2.0)))
+        hard_max_group_size = max(8, int(math.ceil(average_group_size * 2.5)))
+        minimum_group_count = max(2, int(math.ceil(target * 0.75)))
         if len(datasets) >= max(8, target * 2) and len(grouped) < max(2, target // 2):
+            return True
+        if target >= 8 and len(datasets) >= max(24, target * 3) and len(grouped) < minimum_group_count:
             return True
         for dataset_ids in grouped.values():
             group_size = len(dataset_ids)
-            if group_size > max(18, average_group_size * 3):
+            if group_size > hard_max_group_size:
                 return True
-            if group_size < max(6, average_group_size * 2):
+            if group_size < review_threshold:
                 continue
             theme_counts: dict[str, int] = {}
             for dataset_id in dataset_ids:
@@ -339,11 +348,15 @@ class HeuristicClassificationProvider(ClassificationProvider):
                 if not theme or theme == GENERIC_THEME:
                     continue
                 theme_counts[theme] = theme_counts.get(theme, 0) + 1
+            if not theme_counts and group_size >= review_threshold:
+                return True
             if len(theme_counts) >= 3:
                 return True
             if theme_counts:
                 dominant_share = max(theme_counts.values()) / max(1, group_size)
-                if dominant_share < 0.7:
+                if group_size >= soft_max_group_size and dominant_share < 0.82:
+                    return True
+                if dominant_share < 0.72:
                     return True
         return False
 
@@ -716,6 +729,7 @@ class OpenAIClassificationProvider(ClassificationProvider, CandidateRanker):
         )
         self.consecutive_failures = 0
         self.remote_disabled = False
+        self.remote_disabled_until = 0.0
         self.last_error_message = ""
         self.include_source_name = bool(include_source_name)
         self.include_layer_name = bool(include_layer_name)
@@ -728,10 +742,11 @@ class OpenAIClassificationProvider(ClassificationProvider, CandidateRanker):
     def remote_availability_status(self) -> tuple[bool, str]:
         if not self.api_key:
             return False, "OpenAI API key is missing. Configure it in Settings to use Find info (AI)."
-        if self.remote_disabled:
+        remaining_backoff_s = self._remaining_remote_backoff_s()
+        if remaining_backoff_s > 0:
             if self.last_error_message:
                 return False, self.last_error_message
-            return False, "OpenAI is unavailable for the rest of this session after repeated failures."
+            return False, f"OpenAI is temporarily unavailable after repeated failures. Will retry in about {math.ceil(remaining_backoff_s)}s."
         return True, f"OpenAI is available with model {self.model}."
 
     def consume_last_error_message(self) -> str:
@@ -874,12 +889,21 @@ class OpenAIClassificationProvider(ClassificationProvider, CandidateRanker):
         fallback = fallback_grouper(datasets, target_group_count, timeout_s=timeout_s) if callable(fallback_grouper) else {}
         if not self._can_use_remote() or len(datasets) <= 1:
             return fallback
+        target = max(1, min(int(target_group_count or 1), len(datasets)))
+        average_group_size = len(datasets) / max(1, target)
+        soft_max_group_size = max(5, int(math.ceil(average_group_size * 2.0)))
+        minimum_group_count = max(1, min(len(datasets), int(math.ceil(target * 0.9))))
+        maximum_group_count = max(minimum_group_count, min(len(datasets), int(math.floor(target * 1.1))))
         heuristic_profiles = {
             dataset.dataset_id: self.fallback.classify(dataset)
             for dataset in datasets
         }
         payload = {
-            "target_group_count": max(1, min(int(target_group_count or 1), len(datasets))),
+            "target_group_count": target,
+            "minimum_group_count": minimum_group_count,
+            "maximum_group_count": maximum_group_count,
+            "average_group_size": round(average_group_size, 2),
+            "soft_max_group_size": soft_max_group_size,
             "datasets": [
                 {
                     "dataset_id": dataset.dataset_id,
@@ -899,13 +923,24 @@ class OpenAIClassificationProvider(ClassificationProvider, CandidateRanker):
         system_prompt = (
             "Group GIS datasets into a rational set of catalog groups. "
             "Use the requested target_group_count as the intended number of groups. "
+            "The payload also includes minimum_group_count, maximum_group_count, average_group_size, and soft_max_group_size. "
+            "Stay within the minimum_group_count to maximum_group_count range unless it is truly impossible to form coherent groups there. "
+            "Keep most groups close to the average size and treat soft_max_group_size as the normal upper bound. "
+            "Only exceed soft_max_group_size when the datasets are near-duplicates or clearly the same narrow subject. "
+            "Unless the catalog contains many near-duplicate layers, return at least minimum_group_count distinct groups. "
+            "Returning fewer than minimum_group_count or more than maximum_group_count groups is a failure. "
             "Translate or interpret non-English titles, descriptions, and group hints when needed before deciding groups. "
             "If datasets use different languages, normalize them by meaning first and group by subject matter, not by shared language. "
+            "When a managed data language is set, write generic group names in that language rather than switching to English. "
+            "Keep proper names, acronyms, and official source-specific labels in their original form when needed. "
+            "Do not create near-duplicate group names that differ only by singular versus plural wording or similarly minor phrasing. "
+            "Prefer one canonical group name and reuse it consistently across the full assignment set. "
+            "Do not group primarily by source document headings, project phases, or map series labels when the underlying dataset themes differ. "
             "Treat any existing suggested_group as a hint, not a hard constraint, and override it when the dataset meaning points elsewhere. "
             "Risk or hazard layers such as wildfire risk, flood risk, cyclone risk, drought risk, erosion risk, or seismic risk must not be grouped under Protected Area. "
             "For example, 'Risco de incandio e queimadas extremo' belongs with risk or fire-hazard datasets, not with protected areas. "
             "Avoid catch-all or overly broad groups. "
-            "A proposed group should usually stay within roughly three times the average target group size unless every dataset in it is clearly the same subject. "
+            "If one draft group would end up much larger than the others, split it into more coherent subgroups before returning the result. "
             "If a tentative group looks mixed or too large, split it into more coherent subgroups. "
             "Prefer short, human-readable group names. "
             "Return JSON with key groups, where each group has name and dataset_ids."
@@ -933,9 +968,6 @@ class OpenAIClassificationProvider(ClassificationProvider, CandidateRanker):
         for dataset in datasets:
             if dataset.dataset_id not in assignments and dataset.dataset_id in fallback:
                 assignments[dataset.dataset_id] = fallback[dataset.dataset_id]
-        repair_helper = self.fallback if isinstance(self.fallback, HeuristicClassificationProvider) else HeuristicClassificationProvider()
-        if repair_helper.assignments_look_too_broad(datasets, assignments, target_group_count):
-            return repair_helper.group_datasets(datasets, target_group_count, timeout_s=timeout_s)
         return assignments
 
     def rank(
@@ -1012,11 +1044,26 @@ class OpenAIClassificationProvider(ClassificationProvider, CandidateRanker):
         if not self.api_key:
             self.last_error_message = "OpenAI API key is missing. Configure it in Settings to use Find info (AI)."
             return False
-        if self.remote_disabled:
+        remaining_backoff_s = self._remaining_remote_backoff_s()
+        if remaining_backoff_s > 0:
             if not self.last_error_message:
-                self.last_error_message = "OpenAI is unavailable for the rest of this session after repeated failures."
+                self.last_error_message = (
+                    f"OpenAI is temporarily unavailable after repeated failures. Will retry in about {math.ceil(remaining_backoff_s)}s."
+                )
             return False
         return True
+
+    def _remaining_remote_backoff_s(self) -> float:
+        if not self.remote_disabled:
+            return 0.0
+        remaining = max(0.0, float(self.remote_disabled_until or 0.0) - monotonic())
+        if remaining <= 0.0:
+            self.remote_disabled = False
+            self.remote_disabled_until = 0.0
+            self.consecutive_failures = 0
+            self.last_error_message = ""
+            return 0.0
+        return remaining
 
     def _language_context_instruction(self) -> str:
         if self.managed_data_language:
@@ -1061,6 +1108,8 @@ class OpenAIClassificationProvider(ClassificationProvider, CandidateRanker):
             response.raise_for_status()
             envelope = response.json()
             self.consecutive_failures = 0
+            self.remote_disabled = False
+            self.remote_disabled_until = 0.0
             self.last_error_message = ""
             return str(envelope["choices"][0]["message"]["content"]).strip()
         except requests.Timeout:
@@ -1077,9 +1126,10 @@ class OpenAIClassificationProvider(ClassificationProvider, CandidateRanker):
             self.consecutive_failures += 1
         if self.consecutive_failures >= self.max_consecutive_failures:
             self.remote_disabled = True
+            self.remote_disabled_until = monotonic() + REMOTE_AI_FAILURE_BACKOFF_S
             self.last_error_message = (
                 f"{self.last_error_message} "
-                "Remote AI has been disabled for the rest of this session."
+                f"Remote AI has been temporarily disabled for about {int(REMOTE_AI_FAILURE_BACKOFF_S)}s."
             ).strip()
         return ""
 

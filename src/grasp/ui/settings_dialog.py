@@ -5,6 +5,7 @@ from grasp.data_languages import (
     MANAGED_DATA_LANGUAGE_OPTIONS,
     normalize_managed_data_language,
 )
+from grasp.intelligence.providers import DEFAULT_OPENAI_MODEL, DEFAULT_OPENAI_TIMEOUT_S
 from grasp.qt_compat import (
     QComboBox,
     QDialog,
@@ -18,11 +19,12 @@ from grasp.settings import AppSettings
 
 
 MODEL_OPTIONS = [
-    "gpt-4o-mini",
+    "gpt-5.2",
     "gpt-4.1-mini",
     "gpt-4.1",
     "gpt-5-mini",
     "gpt-5",
+    "gpt-4o-mini",
 ]
 
 
@@ -77,10 +79,10 @@ class SettingsDialog(QDialog):
         layout.addWidget(buttons)
 
     def to_settings(self) -> AppSettings:
-        timeout_s = float(self.timeout_edit.text().strip() or "20")
+        timeout_s = float(self.timeout_edit.text().strip() or str(DEFAULT_OPENAI_TIMEOUT_S))
         max_failures = int(self.failures_edit.text().strip() or "2")
         return AppSettings(
-            openai_model=self.model_combo.currentText().strip() or MODEL_OPTIONS[0],
+            openai_model=self.model_combo.currentText().strip() or DEFAULT_OPENAI_MODEL,
             openai_api_key=self.api_key_edit.text().strip(),
             openai_endpoint=self.endpoint_edit.text().strip(),
             managed_data_language=normalize_managed_data_language(self.data_language_combo.currentData()),

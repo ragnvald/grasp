@@ -7,7 +7,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from grasp.branding import APP_AUTHOR, APP_LINKEDIN_URL, APP_REPOSITORY_URL, APP_TAGLINE, APP_WINDOW_TITLE
-from grasp.intelligence.providers import OpenAIClassificationProvider
+from grasp.intelligence.providers import HeuristicClassificationProvider, OpenAIClassificationProvider
 from grasp.intelligence.service import IntelligenceService
 from grasp.models import DatasetRecord, DatasetUnderstanding, SourceCandidate
 from grasp.qt_compat import QApplication, QAbstractItemView, QDialog, QGridLayout, QHBoxLayout, QLabel, QMessageBox, QPlainTextEdit, Qt, QVBoxLayout
@@ -78,6 +78,8 @@ class MainWindowTests(unittest.TestCase):
                     self.assertFalse(window._map_initialized)
                     self.assertTrue(window._map_refresh_pending)
                     self.assertIn("Open the Map tab", window.map_summary.text())
+                    self.assertIn("Checked working set:", window.map_summary.text())
+                    self.assertIn("current scope (Visible on map)", window.map_summary.text())
 
                     window.tabs.setCurrentWidget(window.map_tab)
 
@@ -226,6 +228,7 @@ class MainWindowTests(unittest.TestCase):
                 self.assertEqual(window.dataset_nav_next_button.text(), "Next")
                 self.assertEqual(window.dataset_nav_last_button.text(), "Last")
                 self.assertIn("define one checked working set", window.info_sources_intro_label.text().lower())
+                self.assertIn("does not control the map tab", window.selection_help_label.text().lower())
                 self.assertIn("find info (fast): local first-pass", window.review_actions_note.text().lower())
                 self.assertIn("find info (ai): updates ai title", window.review_actions_note.text().lower())
                 self.assertIn("refreshes likely external sources only", window.review_actions_note.text().lower())
@@ -314,11 +317,16 @@ class MainWindowTests(unittest.TestCase):
                 self.assertEqual(window.exit_button.maximumWidth(), 72)
                 self.assertEqual(window.exit_button.objectName(), "CornerExitButton")
                 self.assertTrue(hasattr(window, "map_scope_combo"))
+                self.assertTrue(hasattr(window, "refresh_map_button"))
+                self.assertTrue(hasattr(window, "map_scope_label"))
                 self.assertEqual(window.map_scope_combo.itemText(0), "Visible on map")
                 self.assertEqual(window.map_scope_combo.itemData(0), "visible")
                 self.assertEqual(window.map_scope_combo.itemText(1), "Show all")
                 self.assertEqual(window.map_scope_combo.itemData(1), "all")
                 self.assertEqual(window._map_scope(), "visible")
+                self.assertIs(window.map_controls_layout.itemAt(0).widget(), window.refresh_map_button)
+                self.assertIs(window.map_controls_layout.itemAt(2).widget(), window.map_scope_label)
+                self.assertIs(window.map_controls_layout.itemAt(3).widget(), window.map_scope_combo)
                 self.assertTrue(window.import_table.isSortingEnabled())
                 self.assertEqual(window.import_table.editTriggers(), QAbstractItemView.NoEditTriggers)
                 self.assertIn("QTreeWidget::item:selected", window.styleSheet())
@@ -1328,8 +1336,8 @@ class MainWindowTests(unittest.TestCase):
                 window._rebuild_ai_services()
                 note = window._ai_runtime_note(307)
                 self.assertIn("run sequentially for 307 dataset(s)", note)
-                self.assertIn("per-dataset timeout is 20s", note)
-                self.assertIn("102:20", note)
+                self.assertIn("per-dataset timeout is 45s", note)
+                self.assertIn("230:15", note)
                 self.assertIn("0.35s cooldown", note)
             finally:
                 window.close()
@@ -2316,13 +2324,70 @@ class MainWindowTests(unittest.TestCase):
                     self.assertEqual(window.repository.get_dataset("a").group_id, "protected-area")
                     self.assertEqual(window.repository.get_dataset("b").group_id, "others")
                     self.assertEqual(window.repository.get_dataset("c").group_id, "others")
-                    self.assertTrue(any("Preparing grouping hints for 3 dataset(s)." in message for message in messages))
+                    self.assertTrue(any("Preparing fresh regroup input for 3 dataset(s)." in message for message in messages))
                     self.assertTrue(any("Starting group synthesis for 3 dataset(s) with target 3 group(s)." in message for message in messages))
                     self.assertTrue(any("Grouping response covered 1/3 prepared dataset(s)." in message for message in messages))
                     self.assertTrue(any("Assigning 2 dataset(s) to Others." in message for message in messages))
                     self.assertTrue(any("Applying 3 group assignment(s) to the catalog." in message for message in messages))
                     self.assertTrue(any("Regroup complete: 3 dataset(s) assigned across 2 populated group(s)." in message for message in messages))
                     self.assertEqual(progress_values[-1], 100)
+            finally:
+                window.close()
+
+    def test_regroup_ignores_cached_ai_group_hints_and_existing_groups(self) -> None:
+        with patch("grasp.ui.main_window.WEBENGINE_AVAILABLE", False):
+            window = MainWindow()
+            try:
+                with tempfile.TemporaryDirectory() as tmp:
+                    window._set_workspace(tmp)
+                    window.repository.create_group("Legacy Group")
+                    window.repository.replace_datasets(
+                        [
+                            DatasetRecord(
+                                dataset_id="a",
+                                source_path="D:/data/a.geojson",
+                                source_format="geojson",
+                                layer_name="Distritos",
+                                display_name_ai="Administrative Regions",
+                                description_ai="Old AI description",
+                                suggested_group="administrative",
+                                group_id="legacy-group",
+                                cache_path="a.parquet",
+                            ),
+                        ]
+                    )
+                    captured: dict[str, DatasetRecord] = {}
+
+                    def _group_datasets(datasets, target_group_count, timeout_s=None):
+                        captured["dataset"] = datasets[0]
+                        return {"a": "Novo Grupo"}
+
+                    window.intelligence_service = SimpleNamespace(group_datasets=_group_datasets)
+                    messages: list[str] = []
+
+                    proposal = window._prepare_regroup_assignments(["a"], 1, status_callback=messages.append)
+
+                    self.assertEqual(proposal["assignments"]["a"], "Novo Grupo")
+                    self.assertIn("dataset", captured)
+                    self.assertEqual(captured["dataset"].display_name_ai, "")
+                    self.assertEqual(captured["dataset"].description_ai, "")
+                    self.assertEqual(captured["dataset"].suggested_group, "")
+                    self.assertEqual(captured["dataset"].display_name_user, "")
+                    self.assertEqual(captured["dataset"].layer_name, "Distritos")
+                    self.assertTrue(
+                        any(
+                            "Current group assignments and cached AI grouping hints will be ignored for this run."
+                            in message
+                            for message in messages
+                        )
+                    )
+                    self.assertTrue(
+                        any(
+                            "User-entered names and descriptions were kept; cached AI grouping hints were ignored."
+                            in message
+                            for message in messages
+                        )
+                    )
             finally:
                 window.close()
 
@@ -2344,7 +2409,7 @@ class MainWindowTests(unittest.TestCase):
                     )
                     messages: list[str] = []
 
-                    with patch("grasp.ui.main_window.monotonic", side_effect=[0.0, 0.0, 121.0, 121.0]):
+                    with patch("grasp.ui.main_window.monotonic", side_effect=[0.0, 0.0, 241.0, 241.0]):
                         regrouped = window._regroup_dataset_ids(["a", "b", "c"], 3, status_callback=messages.append)
 
                     self.assertEqual(regrouped, 3)
@@ -2353,7 +2418,7 @@ class MainWindowTests(unittest.TestCase):
                     self.assertEqual(window.repository.get_dataset("c").group_id, "others")
                     self.assertTrue(
                         any(
-                            "Regroup time budget reached during hint preparation after 02:01. Assigning the remaining 2 dataset(s) to Others."
+                            "Regroup time budget reached during hint preparation after 04:01. Assigning the remaining 2 dataset(s) to Others."
                             in message
                             for message in messages
                         )
@@ -2386,9 +2451,77 @@ class MainWindowTests(unittest.TestCase):
                         regrouped = window._regroup_dataset_ids(["a", "b"], 2, status_callback=messages.append)
 
                     self.assertEqual(regrouped, 2)
-                    self.assertAlmostEqual(captured["timeout_s"], 110.0, places=2)
+                    self.assertAlmostEqual(captured["timeout_s"], 230.0, places=2)
                     self.assertTrue(
-                        any("Waiting for grouping response (max 01:50 remaining)." in message for message in messages)
+                        any("Waiting for grouping response (max 03:50 remaining)." in message for message in messages)
+                    )
+            finally:
+                window.close()
+
+    def test_regroup_retries_with_more_groups_when_result_is_too_broad(self) -> None:
+        with patch("grasp.ui.main_window.WEBENGINE_AVAILABLE", False):
+            window = MainWindow()
+            try:
+                with tempfile.TemporaryDirectory() as tmp:
+                    window._set_workspace(tmp)
+                    window.repository.replace_datasets(
+                        [
+                            DatasetRecord(dataset_id="risk-1", source_path="D:/data/risk1.geojson", source_format="geojson", layer_name="Risco de inundacao alto", cache_path="risk1.parquet"),
+                            DatasetRecord(dataset_id="risk-2", source_path="D:/data/risk2.geojson", source_format="geojson", layer_name="Risco de seca alto", cache_path="risk2.parquet"),
+                            DatasetRecord(dataset_id="risk-3", source_path="D:/data/risk3.geojson", source_format="geojson", layer_name="Risco de erosao alto", cache_path="risk3.parquet"),
+                            DatasetRecord(dataset_id="protected-1", source_path="D:/data/protected1.geojson", source_format="geojson", layer_name="Parque Nacional", cache_path="protected1.parquet"),
+                            DatasetRecord(dataset_id="protected-2", source_path="D:/data/protected2.geojson", source_format="geojson", layer_name="Reserva Especial", cache_path="protected2.parquet"),
+                            DatasetRecord(dataset_id="protected-3", source_path="D:/data/protected3.geojson", source_format="geojson", layer_name="Zona tampo", cache_path="protected3.parquet"),
+                            DatasetRecord(dataset_id="admin-1", source_path="D:/data/admin1.geojson", source_format="geojson", layer_name="Distritos", cache_path="admin1.parquet"),
+                            DatasetRecord(dataset_id="admin-2", source_path="D:/data/admin2.geojson", source_format="geojson", layer_name="Provincia designacao", cache_path="admin2.parquet"),
+                            DatasetRecord(dataset_id="admin-3", source_path="D:/data/admin3.geojson", source_format="geojson", layer_name="Distrito localizacao", cache_path="admin3.parquet"),
+                            DatasetRecord(dataset_id="transport-1", source_path="D:/data/transport1.geojson", source_format="geojson", layer_name="Rede viaria", cache_path="transport1.parquet"),
+                            DatasetRecord(dataset_id="transport-2", source_path="D:/data/transport2.geojson", source_format="geojson", layer_name="Rede ferroviaria", cache_path="transport2.parquet"),
+                            DatasetRecord(dataset_id="transport-3", source_path="D:/data/transport3.geojson", source_format="geojson", layer_name="Aeroportos", cache_path="transport3.parquet"),
+                        ]
+                    )
+                    calls: list[int] = []
+
+                    def _group_datasets(datasets, target_group_count, timeout_s=None):
+                        calls.append(int(target_group_count))
+                        if len(calls) == 1:
+                            return {dataset.dataset_id: "Mega Group" for dataset in datasets}
+                        return {
+                            dataset.dataset_id: (
+                                "Risk" if dataset.dataset_id.startswith("risk-")
+                                else "Protected Area" if dataset.dataset_id.startswith("protected-")
+                                else "Administrative" if dataset.dataset_id.startswith("admin-")
+                                else "Transport"
+                            )
+                            for dataset in datasets
+                        }
+
+                    window.intelligence_service = SimpleNamespace(
+                        classifier=HeuristicClassificationProvider(),
+                        group_datasets=_group_datasets,
+                    )
+                    messages: list[str] = []
+
+                    assignments = window._group_datasets_for_regroup(
+                        [window.repository.get_dataset(dataset_id) for dataset_id in [
+                            "risk-1", "risk-2", "risk-3",
+                            "protected-1", "protected-2", "protected-3",
+                            "admin-1", "admin-2", "admin-3",
+                            "transport-1", "transport-2", "transport-3",
+                        ]],
+                        4,
+                        status_callback=messages.append,
+                        timeout_s=60.0,
+                    )
+
+                    self.assertEqual(calls, [4, 6])
+                    self.assertEqual(assignments["risk-1"], "Risk")
+                    self.assertEqual(assignments["protected-1"], "Protected Area")
+                    self.assertTrue(
+                        any("Retrying with suggested target 6 group(s)." in message for message in messages)
+                    )
+                    self.assertTrue(
+                        any("Using regroup retry result with target 6 group(s)." in message for message in messages)
                     )
             finally:
                 window.close()
@@ -2413,6 +2546,65 @@ class MainWindowTests(unittest.TestCase):
 
                     self.assertEqual(window.repository.get_dataset("a").group_id, "administrative")
                     self.assertEqual(window.repository.get_dataset("b").group_id, "protected-area")
+                    self.assertFalse(window._review_job_running)
+            finally:
+                window.close()
+
+    def test_regroup_group_count_bounds_allow_ten_percent_variance(self) -> None:
+        with patch("grasp.ui.main_window.WEBENGINE_AVAILABLE", False):
+            window = MainWindow()
+            try:
+                self.assertEqual(window._regroup_group_count_bounds(40, 237), (36, 44))
+            finally:
+                window.close()
+
+    def test_complete_regroup_preview_retries_when_group_count_exceeds_tolerance(self) -> None:
+        with patch("grasp.ui.main_window.WEBENGINE_AVAILABLE", False):
+            window = MainWindow()
+            try:
+                with tempfile.TemporaryDirectory() as tmp:
+                    window._set_workspace(tmp)
+                    token = window._begin_background_activity("Regrouping checked datasets...", activity="AI Regroup")
+                    window._review_job_running = True
+                    captured: dict[str, object] = {}
+
+                    with patch.object(
+                        window,
+                        "_resolve_regroup_group_count_variance",
+                        return_value={
+                            "action": "retry",
+                            "target_group_count": 68,
+                            "message": "Retrying with the higher AI-suggested target of 68 groups.",
+                        },
+                    ), patch.object(
+                        window,
+                        "_start_regroup_preview_job",
+                        side_effect=lambda dataset_ids, target_group_count, *, scope_label: captured.update(
+                            {
+                                "dataset_ids": dataset_ids,
+                                "target_group_count": target_group_count,
+                                "scope_label": scope_label,
+                            }
+                        ),
+                    ), patch.object(window, "_confirm_regroup_assignments", side_effect=AssertionError("Should not confirm before retry")):
+                        window._complete_regroup_preview(
+                            token,
+                            {
+                                "assignments": {f"ds-{index}": f"Group {index}" for index in range(1, 69)},
+                                "dataset_ids": [f"ds-{index}" for index in range(1, 69)],
+                                "target_group_count": 40,
+                            },
+                            "checked datasets",
+                        )
+
+                    self.assertEqual(
+                        captured,
+                        {
+                            "dataset_ids": [f"ds-{index}" for index in range(1, 69)],
+                            "target_group_count": 68,
+                            "scope_label": "checked datasets",
+                        },
+                    )
                     self.assertFalse(window._review_job_running)
             finally:
                 window.close()
@@ -2630,6 +2822,7 @@ class MainWindowTests(unittest.TestCase):
                         "Working set: 2 checked dataset(s), divided between 2 groups.",
                         window.selection_scope_status_label.text(),
                     )
+                    self.assertIn("Dropdown group:", window.selection_scope_status_label.text())
             finally:
                 window.close()
 

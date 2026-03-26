@@ -256,6 +256,34 @@ class CatalogRepositoryTests(unittest.TestCase):
             self.assertEqual(repo.get_dataset("b").group_id, "protected-area")
             self.assertNotIn(("old-group", "Old Group"), repo.list_groups())
 
+    def test_create_group_reuses_equivalent_plural_variant(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = CatalogRepository(Path(tmp) / "catalog.sqlite")
+
+            first_group_id = repo.create_group("Protected Area")
+            second_group_id = repo.create_group("Protected Areas")
+
+            self.assertEqual(first_group_id, "protected-area")
+            self.assertEqual(second_group_id, "protected-area")
+            self.assertEqual(repo.list_groups().count(("protected-area", "Protected Area")), 1)
+
+    def test_assign_groups_bulk_merges_singular_plural_group_variants(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = CatalogRepository(Path(tmp) / "catalog.sqlite")
+            repo.replace_datasets(
+                [
+                    DatasetRecord(dataset_id="a", source_path="a", source_format="geojson", group_id="ungrouped", cache_path="a.parquet"),
+                    DatasetRecord(dataset_id="b", source_path="b", source_format="geojson", group_id="ungrouped", cache_path="b.parquet"),
+                ]
+            )
+
+            changed = repo.assign_groups_bulk({"a": "Protected Area", "b": "Protected Areas"})
+
+            self.assertEqual(changed, 2)
+            self.assertEqual(repo.get_dataset("a").group_id, "protected-area")
+            self.assertEqual(repo.get_dataset("b").group_id, "protected-area")
+            self.assertEqual(repo.list_groups().count(("protected-area", "Protected Area")), 1)
+
     def test_reset_groups_moves_datasets_to_ungrouped_and_prunes_empty_groups(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo = CatalogRepository(Path(tmp) / "catalog.sqlite")
