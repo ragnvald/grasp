@@ -225,12 +225,30 @@
       background: transparent;
     }
     .leaflet-control-layers {
+      position: relative;
       max-width: min(320px, calc(100vw - 32px));
       overflow-wrap: anywhere;
     }
     .leaflet-control-layers label {
       max-width: 100%;
       white-space: normal;
+    }
+    .leaflet-control-layers .grasp-layer-close {
+      position: absolute;
+      top: 8px;
+      right: 8px;
+      border: 1px solid rgba(45, 67, 77, 0.16);
+      background: rgba(245, 247, 248, 0.98);
+      color: #22323a;
+      border-radius: 8px;
+      min-height: 28px;
+      padding: 4px 10px;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    .leaflet-control-layers .leaflet-control-layers-list {
+      padding-top: 30px;
     }
     .leaflet-control-layers.grasp-layers-hidden {
       display: none;
@@ -1501,6 +1519,30 @@
       updateLayerControlVisibility();
     }
 
+    function hideLayerControlVisibility(){
+      if (!layerListVisible){
+        return;
+      }
+      layerListVisible = false;
+      updateLayerControlVisibility();
+    }
+
+    function ensureLayerControlDismissUi(container){
+      if (!container || container.querySelector(".grasp-layer-close")){
+        return;
+      }
+      const closeButton = document.createElement("button");
+      closeButton.type = "button";
+      closeButton.className = "grasp-layer-close";
+      closeButton.textContent = "Close";
+      closeButton.addEventListener("click", function(event){
+        event.preventDefault();
+        event.stopPropagation();
+        hideLayerControlVisibility();
+      });
+      container.appendChild(closeButton);
+    }
+
     function updateLayerControlVisibility(){
       const canShowLayerList = rendererMode === "leaflet" && !!layerControl;
       if (layerListButton){
@@ -1512,6 +1554,7 @@
         ? layerControl.getContainer()
         : null;
       if (container && container.classList){
+        ensureLayerControlDismissUi(container);
         container.classList.toggle("grasp-layers-hidden", !layerListVisible);
       }
     }

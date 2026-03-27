@@ -17,7 +17,11 @@ class MapAssetTests(unittest.TestCase):
         html = self._leaflet_map_html()
         self.assertIn('createMapControlButton("Show Layers"', html)
         self.assertIn("function toggleLayerControlVisibility()", html)
+        self.assertIn("function hideLayerControlVisibility()", html)
+        self.assertIn("function ensureLayerControlDismissUi(container)", html)
+        self.assertIn('closeButton.textContent = "Close";', html)
         self.assertIn('layerListButton.textContent = layerListVisible ? "Hide Layers" : "Show Layers";', html)
+        self.assertIn('.leaflet-control-layers .grasp-layer-close {', html)
         self.assertIn(".leaflet-control-layers.grasp-layers-hidden {", html)
 
     def test_leaflet_asset_caps_show_all_mode_for_safety(self) -> None:
