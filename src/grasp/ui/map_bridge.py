@@ -106,16 +106,22 @@ class MapBridge(QObject):
         dataset = self.repository.get_dataset(dataset_id)
         if not dataset:
             return json.dumps({"type": "FeatureCollection", "features": []})
-        path = self._resolve_cache_path(dataset)
-        if not path.exists():
+        try:
             path = self.ingest_service.ensure_dataset_cache(dataset)
+        except Exception as exc:
+            logger.warning("Failed to prepare preview cache for %s: %s", dataset_id, exc)
+            return json.dumps({"type": "FeatureCollection", "features": []})
         cache_token = self._cache_token(dataset, path)
         cached = self._geojson_cache.get(dataset_id)
         if cached and cached[0] == cache_token:
             self._geojson_cache.move_to_end(dataset_id)
             self._log_timing("getLayerGeoJson(cache)", started, extra=f"dataset_id={dataset_id}")
             return cached[1]
-        gdf = gpd.read_parquet(path)
+        try:
+            gdf = gpd.read_parquet(path)
+        except Exception as exc:
+            logger.warning("Failed to read preview cache for %s: %s", dataset_id, exc)
+            return json.dumps({"type": "FeatureCollection", "features": []})
         if gdf.crs is None:
             gdf = gdf.set_crs(epsg=4326, allow_override=True)
         elif str(gdf.crs).upper() != "EPSG:4326":

@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 import gc
 import hashlib
 import json
+import math
 from pathlib import Path
 import re
 from typing import Callable
@@ -48,6 +49,10 @@ GEOJSON_TYPES = {
     "multipolygon",
 }
 GEOJSON_SNIFF_BYTES = 65536
+WGS84_MIN_LONGITUDE = -180.0
+WGS84_MAX_LONGITUDE = 180.0
+WGS84_MIN_LATITUDE = -90.0
+WGS84_MAX_LATITUDE = 90.0
 
 
 @dataclass(slots=True)
@@ -148,14 +153,27 @@ class IngestService:
         if self.workspace is None:
             raise ValueError("Workspace is required to build dataset cache.")
         cache_path = self._resolve_cache_path(dataset.dataset_id, dataset.cache_path)
-        if cache_path.exists():
-            return cache_path
         file_path = self._resolve_source_path(dataset.source_path)
         label = f"{file_path.name}:{dataset.layer_name}" if dataset.layer_name else file_path.name
+        if cache_path.exists():
+            cache_quality_issue = self._cache_quality_issue(cache_path)
+            if cache_quality_issue is None:
+                return cache_path
+            self._emit(
+                status_callback,
+                f"Rebuilding cached preview for {label}: {cache_quality_issue}.",
+            )
+            try:
+                cache_path.unlink()
+            except FileNotFoundError:
+                pass
         self._emit(status_callback, f"Loading full dataset {label}")
         gdf = self._read_dataset(file_path, dataset.layer_name)
         self._emit(status_callback, f"Normalizing {label} ({len(gdf)} features)")
         gdf = self._normalize_geodataframe(gdf)
+        quality_issue = self._quality_issue_from_gdf(gdf)
+        if quality_issue is not None:
+            raise ValueError(f"{label} failed geometry quality check: {quality_issue}.")
         cache_path.parent.mkdir(parents=True, exist_ok=True)
         self._emit(status_callback, f"Caching {label}")
         temp_path = self.workspace.temp_path(f"{dataset.dataset_id}.parquet")
@@ -201,27 +219,46 @@ class IngestService:
         existing_record: DatasetRecord | None = None,
         status_callback: StatusCallback | None = None,
     ) -> DatasetRecord | None:
+        label = f"{file_path.name}:{layer_name}" if layer_name else file_path.name
         dataset_id = make_dataset_id(workspace.root_path, file_path, layer_name)
         source_mtime_ns, source_size_bytes = self._source_signature(file_path)
         source_style_items = detect_source_style_evidence(file_path, layer_name)
         source_style_summary = summarize_source_style_evidence(source_style_items)
         source_style_items_json = json.dumps(source_style_items, ensure_ascii=False)
         if existing_record is not None and self._can_reuse_existing_record(existing_record, source_mtime_ns, source_size_bytes):
-            self._emit(status_callback, f"Reusing existing catalog metadata for {file_path.name}{':' + layer_name if layer_name else ''}")
-            return self._reuse_existing_record(
-                workspace,
-                existing_record,
-                file_path,
-                sort_order,
-                source_mtime_ns,
-                source_size_bytes,
-                source_style_summary,
-                source_style_items_json,
+            cached_quality_issue = self._quality_issue_from_feature_count_and_bounds(
+                existing_record.feature_count,
+                existing_record.bbox_wgs84,
+            )
+            if cached_quality_issue is None:
+                self._emit(status_callback, f"Reusing existing catalog metadata for {label}")
+                return self._reuse_existing_record(
+                    workspace,
+                    existing_record,
+                    file_path,
+                    sort_order,
+                    source_mtime_ns,
+                    source_size_bytes,
+                    source_style_summary,
+                    source_style_items_json,
+                )
+            self._emit(
+                status_callback,
+                f"Rechecking {label}: stored metadata failed geometry quality check ({cached_quality_issue}).",
             )
         try:
             summary = self._summarize_dataset(file_path, layer_name, status_callback=status_callback)
         except Exception as exc:
-            return self._skip(workspace, file_path, layer_name, exc)
+            return self._skip(workspace, file_path, layer_name, exc, status_callback=status_callback)
+        quality_issue = self._quality_issue_from_feature_count_and_bounds(summary.feature_count, summary.bbox_wgs84)
+        if quality_issue is not None:
+            return self._skip(
+                workspace,
+                file_path,
+                layer_name,
+                ValueError(f"failed geometry quality check: {quality_issue}"),
+                status_callback=status_callback,
+            )
         self._invalidate_existing_cache(workspace, dataset_id, existing_record)
         cache_path = workspace.dataset_cache_path(dataset_id)
         return DatasetRecord(
@@ -244,7 +281,17 @@ class IngestService:
             cache_path=str(cache_path),
         )
 
-    def _skip(self, workspace: ProjectWorkspace, file_path: Path, layer_name: str, exc: Exception) -> None:
+    def _skip(
+        self,
+        workspace: ProjectWorkspace,
+        file_path: Path,
+        layer_name: str,
+        exc: Exception,
+        *,
+        status_callback: StatusCallback | None = None,
+    ) -> None:
+        label = f"{file_path.name}:{layer_name}" if layer_name else file_path.name
+        self._emit(status_callback, f"Skipping {label}: {exc}")
         log_path = workspace.log_path("ingest.log")
         with log_path.open("a", encoding="utf-8") as handle:
             layer_note = f":{layer_name}" if layer_name else ""
@@ -572,6 +619,47 @@ class IngestService:
         if gdf.empty:
             return []
         return [round(float(value), 8) for value in gdf.total_bounds.tolist()]
+
+    def _cache_quality_issue(self, cache_path: Path) -> str | None:
+        try:
+            cached = gpd.read_parquet(cache_path)
+        except Exception as exc:
+            return f"cached preview could not be read ({exc})"
+        try:
+            cached = self._normalize_geodataframe(cached)
+        except Exception as exc:
+            return f"cached preview could not be normalized ({exc})"
+        return self._quality_issue_from_gdf(cached)
+
+    def _quality_issue_from_gdf(self, gdf: gpd.GeoDataFrame) -> str | None:
+        return self._quality_issue_from_feature_count_and_bounds(len(gdf), self._bbox_wgs84(gdf))
+
+    def _quality_issue_from_feature_count_and_bounds(self, feature_count: int, bbox_wgs84: list[float]) -> str | None:
+        if int(feature_count or 0) <= 0:
+            return "no usable geometries remain after validation"
+        if not self._has_usable_wgs84_bounds(bbox_wgs84):
+            if bbox_wgs84:
+                return "bounds are outside usable WGS84 range; CRS is likely missing or incorrect"
+            return "no usable geographic bounds were found"
+        return None
+
+    def _has_usable_wgs84_bounds(self, bounds: list[float]) -> bool:
+        if len(bounds) != 4:
+            return False
+        try:
+            minx, miny, maxx, maxy = (float(value) for value in bounds)
+        except (TypeError, ValueError):
+            return False
+        if not all(math.isfinite(value) for value in (minx, miny, maxx, maxy)):
+            return False
+        if minx > maxx or miny > maxy:
+            return False
+        return (
+            WGS84_MIN_LONGITUDE <= minx <= WGS84_MAX_LONGITUDE
+            and WGS84_MIN_LONGITUDE <= maxx <= WGS84_MAX_LONGITUDE
+            and WGS84_MIN_LATITUDE <= miny <= WGS84_MAX_LATITUDE
+            and WGS84_MIN_LATITUDE <= maxy <= WGS84_MAX_LATITUDE
+        )
 
     def _column_profile(self, gdf: gpd.GeoDataFrame, file_path: Path, layer_name: str) -> dict:
         columns: list[dict[str, object]] = []

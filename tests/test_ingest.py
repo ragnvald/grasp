@@ -63,6 +63,56 @@ class IngestServiceTests(unittest.TestCase):
             self.assertEqual(len(cached), 1)
             self.assertTrue(bool(cached.geometry.iloc[0].is_valid))
 
+    def test_scan_skips_dataset_with_unusable_wgs84_bounds(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            projected_like = gpd.GeoDataFrame(
+                {"name": ["projected"]},
+                geometry=[Point(500000.0, 8500000.0)],
+                crs=None,
+            )
+            projected_like.to_parquet(root / "south_luangwa.parquet", index=False)
+
+            service = IngestService()
+            messages: list[str] = []
+            datasets = service.scan_folder(root, status_callback=messages.append)
+
+            self.assertEqual(datasets, [])
+            self.assertTrue(
+                any(
+                    "failed geometry quality check: bounds are outside usable WGS84 range" in message
+                    for message in messages
+                )
+            )
+
+    def test_ensure_dataset_cache_rebuilds_empty_cached_preview(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            workspace = ensure_workspace(root)
+            points = gpd.GeoDataFrame(
+                {"name": ["a"]},
+                geometry=[Point(10.4, 63.4)],
+                crs="EPSG:4326",
+            )
+            points.to_file(root / "points.geojson", driver="GeoJSON")
+
+            service = IngestService(workspace)
+            datasets = service.scan_folder(root)
+            self.assertEqual(len(datasets), 1)
+            dataset = datasets[0]
+            cache_path = workspace.resolve_cache_path(dataset.dataset_id, dataset.cache_path)
+            cache_path.parent.mkdir(parents=True, exist_ok=True)
+            points.head(0).to_parquet(cache_path, index=False)
+
+            messages: list[str] = []
+            rebuilt_cache = service.ensure_dataset_cache(dataset, status_callback=messages.append)
+
+            cached = gpd.read_parquet(rebuilt_cache)
+            self.assertEqual(len(cached), 1)
+            self.assertTrue(
+                any("Rebuilding cached preview for points.geojson" in message for message in messages)
+            )
+
     def test_fingerprint_matches_equivalent_datasets(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
