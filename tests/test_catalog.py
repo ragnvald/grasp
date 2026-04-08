@@ -441,6 +441,27 @@ class CatalogRepositoryTests(unittest.TestCase):
             self.assertEqual(len(stored.source_style_items), 1)
             self.assertEqual(stored.source_style_items[0]["kind"], "sidecar:qml")
 
+    def test_repository_persists_raw_import_data(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = CatalogRepository(Path(tmp) / "catalog.sqlite")
+            repo.replace_datasets(
+                [
+                    DatasetRecord(
+                        dataset_id="meta",
+                        source_path="D:/data/roads.shp",
+                        source_format="shp",
+                        raw_import_data="<metadata><idinfo><citation>Roads</citation></idinfo></metadata>",
+                        cache_path="meta.parquet",
+                    )
+                ]
+            )
+
+            stored = repo.get_dataset("meta")
+
+            self.assertIsNotNone(stored)
+            self.assertIn("<metadata>", stored.raw_import_data)
+            self.assertIn("Roads", stored.raw_import_data)
+
 
 if __name__ == "__main__":
     unittest.main()
