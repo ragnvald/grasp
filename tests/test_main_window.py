@@ -153,7 +153,7 @@ class MainWindowTests(unittest.TestCase):
                     self.assertEqual(stored.description_user, "AI generated description")
                     self.assertEqual(window.dataset_name_edit.text(), "AI Roads")
                     self.assertEqual(window.dataset_description_edit.toPlainText(), "AI generated description")
-                    self.assertIn("The checked working set is shared with the checkboxes in Datasets overview", window.review_visibility_note.text())
+                    self.assertIn("The checked working set is shared with the checkboxes in the dataset list on this page", window.review_visibility_note.text())
             finally:
                 window.close()
 
@@ -163,7 +163,7 @@ class MainWindowTests(unittest.TestCase):
             try:
                 self.assertEqual(
                     [window.tabs.tabText(index) for index in range(window.tabs.count())],
-                    ["Import", "Datasets overview", "Review datasets", "Manage data", "Map", "Settings", "About"],
+                    ["Import", "Manage data", "Review datasets", "Map", "Settings", "About"],
                 )
                 self.assertTrue(window.tabs.tabBar().usesScrollButtons())
                 self.assertEqual(window.tabs.tabBar().elideMode(), Qt.ElideRight)
@@ -172,17 +172,18 @@ class MainWindowTests(unittest.TestCase):
                 self.assertEqual(window.import_tab.layout().contentsMargins().left(), TAB_PAGE_MARGIN_PX)
                 self.assertEqual(window.review_datasets_tab.layout().contentsMargins().left(), TAB_PAGE_MARGIN_PX)
                 self.assertEqual(window.info_sources_tab.layout().contentsMargins().left(), TAB_PAGE_MARGIN_PX)
-                self.assertEqual(window.datasets_overview_tab.layout().contentsMargins().left(), TAB_PAGE_MARGIN_PX)
                 self.assertEqual(window.map_tab.layout().contentsMargins().left(), TAB_PAGE_MARGIN_PX)
                 self.assertEqual(window.settings_tab.layout().contentsMargins().left(), TAB_PAGE_MARGIN_PX)
                 self.assertEqual(window.about_tab.layout().contentsMargins().left(), TAB_PAGE_MARGIN_PX)
                 self.assertEqual(window.datasets_group_box.title(), "Datasets")
                 self.assertEqual(window.browse_button.text(), "Browse")
                 self.assertEqual(window.rebuild_archive_button.text(), "Rebuild archive")
-                self.assertEqual(window.load_catalog_button.text(), "Load data from folder")
-                self.assertEqual(window.reset_all_data_button.text(), "Reset All Data")
+                self.assertEqual(window.load_catalog_button.text(), "Load from database")
+                self.assertEqual(window.reset_all_data_button.text(), "Delete database")
                 self.assertEqual(window.simplify_import_names_checkbox.text(), "Simplify long dataset names on import")
                 self.assertIn("Description", window.simplify_import_names_checkbox.toolTip())
+                self.assertEqual(window.collect_available_metadata_checkbox.text(), "Collect available metadata")
+                self.assertIn(".xml", window.collect_available_metadata_checkbox.toolTip())
                 self.assertEqual(window.selection_group_box.title(), "1. Choose datasets for batch work")
                 self.assertEqual(window.grouping_group_box.title(), "2. Groups")
                 self.assertEqual(window.dataset_actions_group_box.title(), "3. Apply batch changes")
@@ -241,11 +242,12 @@ class MainWindowTests(unittest.TestCase):
                 self.assertFalse(window.map_tab.isAncestorOf(window.generate_styles_button))
                 self.assertTrue(window.info_sources_tab.isAncestorOf(window.selection_group_box))
                 self.assertIs(window.info_sources_tab.layout().itemAt(1).widget(), window.selection_group_box)
-                self.assertIsInstance(window.info_sources_tab.layout().itemAt(2).layout(), QHBoxLayout)
-                self.assertIs(window.info_sources_tab.layout().itemAt(3).widget(), window.review_job_group_box)
+                self.assertIs(window.info_sources_tab.layout().itemAt(2).widget(), window.datasets_group_box)
+                self.assertIsInstance(window.info_sources_tab.layout().itemAt(3).layout(), QHBoxLayout)
+                self.assertIs(window.info_sources_tab.layout().itemAt(4).widget(), window.review_job_group_box)
                 self.assertTrue(window.review_job_group_box.isAncestorOf(window.review_progress))
                 self.assertTrue(window.review_job_group_box.isAncestorOf(window.review_visibility_note))
-                self.assertTrue(window.datasets_overview_tab.isAncestorOf(window.datasets_group_box))
+                self.assertTrue(window.info_sources_tab.isAncestorOf(window.datasets_group_box))
                 self.assertTrue(window.datasets_group_box.isAncestorOf(window.tree))
                 self.assertFalse(hasattr(window, "review_actions_group_box"))
                 self.assertFalse(hasattr(window, "find_info_fast_button"))
@@ -274,6 +276,7 @@ class MainWindowTests(unittest.TestCase):
                 self.assertTrue(window.dataset_details_group_box.isAncestorOf(window.dataset_group_combo))
                 self.assertTrue(window.dataset_details_group_box.isAncestorOf(window.source_style_label))
                 self.assertTrue(window.dataset_details_group_box.isAncestorOf(window.ai_description_box))
+                self.assertTrue(window.dataset_details_group_box.isAncestorOf(window.raw_import_data_box))
                 self.assertTrue(window.dataset_details_group_box.isAncestorOf(window.save_dataset_button))
                 self.assertIsInstance(window.map_tab.layout().itemAt(0).layout(), QHBoxLayout)
                 self.assertEqual(window.review_dataset_table.editTriggers(), QAbstractItemView.NoEditTriggers)
@@ -287,6 +290,9 @@ class MainWindowTests(unittest.TestCase):
                 self.assertEqual(window.dataset_description_edit.maximumHeight(), 96)
                 self.assertEqual(window.ai_description_box.minimumHeight(), 72)
                 self.assertEqual(window.ai_description_box.maximumHeight(), 96)
+                self.assertEqual(window.raw_import_data_box.minimumHeight(), 96)
+                self.assertEqual(window.raw_import_data_box.maximumHeight(), 140)
+                self.assertTrue(window.raw_import_data_box.isReadOnly())
                 self.assertTrue(hasattr(window, "settings_search_timeout_edit"))
                 self.assertTrue(hasattr(window, "settings_search_failures_edit"))
                 self.assertTrue(hasattr(window, "settings_search_candidates_edit"))
@@ -525,6 +531,7 @@ class MainWindowTests(unittest.TestCase):
                                 dataset_id="styled",
                                 source_path="D:/data/roads.geojson",
                                 source_format="geojson",
+                                raw_import_data="<metadata><citation>Road dataset</citation></metadata>",
                                 source_style_summary="Possible source styling detected: QGIS QML style file (roads.qml).",
                                 source_style_items_json='[{"kind":"sidecar:qml","label":"QGIS QML style file (roads.qml)","path":"D:/data/roads.qml"}]',
                                 cache_path="styled.parquet",
@@ -539,6 +546,7 @@ class MainWindowTests(unittest.TestCase):
 
                     self.assertIn("roads.qml", window.source_style_label.text())
                     self.assertIn("roads.qml", window.source_style_label.toolTip())
+                    self.assertIn("Road dataset", window.raw_import_data_box.toPlainText())
             finally:
                 window.close()
 
@@ -878,7 +886,7 @@ class MainWindowTests(unittest.TestCase):
                 window.tabs.setCurrentWidget(window.info_sources_tab)
                 self.app.processEvents()
 
-                workflow_layout = window.info_sources_tab.layout().itemAt(2).layout()
+                workflow_layout = window.info_sources_tab.layout().itemAt(3).layout()
                 self.assertIsInstance(workflow_layout, QHBoxLayout)
                 grouping_geometry = window.grouping_group_box.geometry()
                 actions_geometry = window.dataset_actions_group_box.geometry()
@@ -896,7 +904,7 @@ class MainWindowTests(unittest.TestCase):
             try:
                 with tempfile.TemporaryDirectory() as tmp:
                     window._set_workspace(tmp)
-                    window.append_activity_log("Loaded catalog.", activity="Load data from folder")
+                    window.append_activity_log("Loaded catalog.", activity="Load from database")
 
                     log_path = Path(tmp) / "data_out" / "log.txt"
 
@@ -904,7 +912,7 @@ class MainWindowTests(unittest.TestCase):
                     contents = log_path.read_text(encoding="utf-8")
                     self.assertRegex(
                         contents,
-                        r"^\[\d{4}\.\d{2}\.\d{2} \d{2}:\d{2}:\d{2}\] \[Load data from folder\] - Loaded catalog\.\n?$",
+                        r"^\[\d{4}\.\d{2}\.\d{2} \d{2}:\d{2}:\d{2}\] \[Load from database\] - Loaded catalog\.\n?$",
                     )
             finally:
                 window.close()
@@ -957,6 +965,48 @@ class MainWindowTests(unittest.TestCase):
                         "1 new or changed dataset(s) are ready for Find info (fast) in Manage data.",
                         window.log_text.toPlainText(),
                     )
+            finally:
+                window.close()
+
+    def test_start_scan_passes_collect_available_metadata_flag_to_worker(self) -> None:
+        with patch("grasp.ui.main_window.WEBENGINE_AVAILABLE", False):
+            window = MainWindow()
+            try:
+                with tempfile.TemporaryDirectory() as tmp:
+                    captured: dict[str, object] = {}
+
+                    class _Signal:
+                        def connect(self, _fn) -> None:
+                            return None
+
+                    class _Worker:
+                        def __init__(self, fn, *args, **kwargs) -> None:
+                            captured["fn"] = fn
+                            captured["args"] = args
+                            captured["kwargs"] = kwargs
+                            self.signals = SimpleNamespace(
+                                status=_Signal(),
+                                progress=_Signal(),
+                                result=_Signal(),
+                                error=_Signal(),
+                                finished=_Signal(),
+                            )
+
+                    started: list[object] = []
+                    window.folder_edit.setText(tmp)
+                    window.collect_available_metadata_checkbox.setChecked(True)
+
+                    with patch("grasp.ui.main_window.FunctionWorker", _Worker), patch.object(
+                        window.thread_pool,
+                        "start",
+                        side_effect=lambda worker: started.append(worker),
+                    ):
+                        window.start_scan()
+
+                    self.assertIs(captured["fn"], window.ingest_service.scan_folder)
+                    self.assertEqual(captured["args"][:2], (tmp, []))
+                    self.assertEqual(captured["kwargs"], {"collect_available_metadata": True})
+                    self.assertEqual(len(started), 1)
             finally:
                 window.close()
 
@@ -2276,7 +2326,7 @@ class MainWindowTests(unittest.TestCase):
         with patch("grasp.ui.main_window.WEBENGINE_AVAILABLE", False):
             window = MainWindow()
             try:
-                self.assertIn("Drag datasets between groups in the overview below", window.datasets_help_note.text())
+                self.assertIn("Drag datasets between groups below", window.datasets_help_note.text())
             finally:
                 window.close()
 
