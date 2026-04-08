@@ -74,6 +74,7 @@ class IngestService:
         path: str | Path,
         existing_records: dict[str, DatasetRecord] | list[DatasetRecord] | None = None,
         *,
+        collect_available_metadata: bool = False,
         status_callback: StatusCallback | None = None,
         progress_callback: ProgressCallback | None = None,
     ) -> list[DatasetRecord]:
@@ -108,6 +109,7 @@ class IngestService:
                         layer_name,
                         len(datasets),
                         existing_record=existing_by_id.get(make_dataset_id(workspace.root_path, file_path, layer_name)),
+                        collect_available_metadata=collect_available_metadata,
                         status_callback=status_callback,
                     )
                     if record is not None:
@@ -122,6 +124,7 @@ class IngestService:
                     "",
                     len(datasets),
                     existing_record=existing_by_id.get(make_dataset_id(workspace.root_path, file_path, "")),
+                    collect_available_metadata=collect_available_metadata,
                     status_callback=status_callback,
                 )
                 if record is not None:
@@ -217,6 +220,7 @@ class IngestService:
         sort_order: int,
         *,
         existing_record: DatasetRecord | None = None,
+        collect_available_metadata: bool = False,
         status_callback: StatusCallback | None = None,
     ) -> DatasetRecord | None:
         label = f"{file_path.name}:{layer_name}" if layer_name else file_path.name
@@ -225,7 +229,13 @@ class IngestService:
         source_style_items = detect_source_style_evidence(file_path, layer_name)
         source_style_summary = summarize_source_style_evidence(source_style_items)
         source_style_items_json = json.dumps(source_style_items, ensure_ascii=False)
-        if existing_record is not None and self._can_reuse_existing_record(existing_record, source_mtime_ns, source_size_bytes):
+        raw_import_data = self._collect_associated_metadata(file_path) if collect_available_metadata else ""
+        if existing_record is not None and self._can_reuse_existing_record(
+            existing_record,
+            source_mtime_ns,
+            source_size_bytes,
+            raw_import_data,
+        ):
             cached_quality_issue = self._quality_issue_from_feature_count_and_bounds(
                 existing_record.feature_count,
                 existing_record.bbox_wgs84,
@@ -241,6 +251,7 @@ class IngestService:
                     source_size_bytes,
                     source_style_summary,
                     source_style_items_json,
+                    raw_import_data,
                 )
             self._emit(
                 status_callback,
@@ -276,6 +287,7 @@ class IngestService:
             fingerprint=self._fingerprint_from_summary(summary),
             sort_order=sort_order,
             visibility=summary.feature_count <= MAX_AUTO_VISIBLE_FEATURES,
+            raw_import_data=raw_import_data,
             source_style_summary=source_style_summary,
             source_style_items_json=source_style_items_json,
             cache_path=str(cache_path),
@@ -516,15 +528,54 @@ class IngestService:
         stat = file_path.stat()
         return int(stat.st_mtime_ns), int(stat.st_size)
 
+    def _collect_associated_metadata(self, file_path: Path) -> str:
+        blocks: list[str] = []
+        metadata_paths = self._associated_metadata_paths(file_path)
+        for metadata_path in metadata_paths:
+            text = self._read_associated_metadata_text(metadata_path).strip()
+            if not text:
+                continue
+            if len(metadata_paths) == 1:
+                blocks.append(text)
+            else:
+                blocks.append(f"[{metadata_path.name}]\n{text}")
+        return "\n\n".join(blocks).strip()
+
+    def _associated_metadata_paths(self, file_path: Path) -> list[Path]:
+        candidates = [
+            file_path.parent / f"{file_path.name}.xml",
+            file_path.with_suffix(".xml"),
+        ]
+        unique_paths: list[Path] = []
+        seen: set[Path] = set()
+        for candidate in candidates:
+            resolved = candidate.resolve()
+            if resolved in seen or not candidate.exists() or not candidate.is_file():
+                continue
+            seen.add(resolved)
+            unique_paths.append(candidate)
+        return unique_paths
+
+    def _read_associated_metadata_text(self, path: Path) -> str:
+        payload = path.read_bytes()
+        for encoding in ("utf-8-sig", "utf-16", "utf-16-le", "utf-16-be"):
+            try:
+                return payload.decode(encoding)
+            except UnicodeDecodeError:
+                continue
+        return payload.decode("latin-1", errors="replace")
+
     def _can_reuse_existing_record(
         self,
         existing_record: DatasetRecord,
         source_mtime_ns: int,
         source_size_bytes: int,
+        raw_import_data: str,
     ) -> bool:
         return (
             int(existing_record.source_mtime_ns or 0) == source_mtime_ns
             and int(existing_record.source_size_bytes or 0) == source_size_bytes
+            and str(existing_record.raw_import_data or "") == str(raw_import_data or "")
         )
 
     def _reuse_existing_record(
@@ -537,6 +588,7 @@ class IngestService:
         source_size_bytes: int,
         source_style_summary: str,
         source_style_items_json: str,
+        raw_import_data: str,
     ) -> DatasetRecord:
         migrated_cache_path = str(workspace.dataset_cache_path(existing_record.dataset_id))
         return DatasetRecord(
@@ -550,6 +602,7 @@ class IngestService:
             display_name_ai=existing_record.display_name_ai,
             description_user=existing_record.description_user,
             description_ai=existing_record.description_ai,
+            raw_import_data=raw_import_data,
             geometry_type=existing_record.geometry_type,
             feature_count=existing_record.feature_count,
             crs=existing_record.crs,
