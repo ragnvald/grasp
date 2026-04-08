@@ -33,6 +33,7 @@ CREATE TABLE IF NOT EXISTS datasets (
     display_name_ai TEXT NOT NULL DEFAULT '',
     description_user TEXT NOT NULL DEFAULT '',
     description_ai TEXT NOT NULL DEFAULT '',
+    raw_import_data TEXT NOT NULL DEFAULT '',
     geometry_type TEXT NOT NULL DEFAULT '',
     feature_count INTEGER NOT NULL DEFAULT 0,
     crs TEXT NOT NULL DEFAULT '',
@@ -85,6 +86,7 @@ DATASET_COLUMN_MIGRATIONS = {
     "source_size_bytes": "INTEGER NOT NULL DEFAULT 0",
     "source_style_summary": "TEXT NOT NULL DEFAULT ''",
     "source_style_items_json": "TEXT NOT NULL DEFAULT '[]'",
+    "raw_import_data": "TEXT NOT NULL DEFAULT ''",
 }
 
 
@@ -226,11 +228,11 @@ class CatalogRepository:
                     """
                     INSERT INTO datasets (
                         dataset_id, source_path, source_format, source_mtime_ns, source_size_bytes, layer_name,
-                        display_name_user, display_name_ai, description_user, description_ai,
+                        display_name_user, display_name_ai, description_user, description_ai, raw_import_data,
                         geometry_type, feature_count, crs, bbox_wgs84, column_profile_json,
                         fingerprint, group_id, sort_order, visibility, include_in_export, source_style_summary, source_style_items_json,
                         cache_path, ai_confidence, suggested_group, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(dataset_id) DO UPDATE SET
                         source_path = excluded.source_path,
                         source_format = excluded.source_format,
@@ -241,6 +243,7 @@ class CatalogRepository:
                         display_name_ai = excluded.display_name_ai,
                         description_user = excluded.description_user,
                         description_ai = excluded.description_ai,
+                        raw_import_data = excluded.raw_import_data,
                         geometry_type = excluded.geometry_type,
                         feature_count = excluded.feature_count,
                         crs = excluded.crs,
@@ -269,6 +272,7 @@ class CatalogRepository:
                         dataset.display_name_ai,
                         dataset.description_user,
                         dataset.description_ai,
+                        dataset.raw_import_data,
                         dataset.geometry_type,
                         dataset.feature_count,
                         dataset.crs,
@@ -302,7 +306,7 @@ class CatalogRepository:
                 """
                 SELECT dataset_id, source_path, source_format, layer_name,
                        source_mtime_ns, source_size_bytes,
-                       display_name_user, display_name_ai, description_user, description_ai,
+                       display_name_user, display_name_ai, description_user, description_ai, raw_import_data,
                        geometry_type, feature_count, crs, bbox_wgs84, column_profile_json,
                        fingerprint, group_id, sort_order, visibility, include_in_export, source_style_summary, source_style_items_json,
                        cache_path, ai_confidence, suggested_group
@@ -318,7 +322,7 @@ class CatalogRepository:
                 """
                 SELECT dataset_id, source_path, source_format, layer_name,
                        source_mtime_ns, source_size_bytes,
-                       display_name_user, display_name_ai, description_user, description_ai,
+                       display_name_user, display_name_ai, description_user, description_ai, raw_import_data,
                        geometry_type, feature_count, crs, bbox_wgs84, column_profile_json,
                        fingerprint, group_id, sort_order, visibility, include_in_export, source_style_summary, source_style_items_json,
                        cache_path, ai_confidence, suggested_group
@@ -733,6 +737,7 @@ class CatalogRepository:
                 int(prior.source_mtime_ns or 0) != int(current.source_mtime_ns or 0),
                 int(prior.source_size_bytes or 0) != int(current.source_size_bytes or 0),
                 str(prior.fingerprint or "") != str(current.fingerprint or ""),
+                str(prior.raw_import_data or "") != str(current.raw_import_data or ""),
                 str(prior.geometry_type or "") != str(current.geometry_type or ""),
                 int(prior.feature_count or 0) != int(current.feature_count or 0),
             ]
