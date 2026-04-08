@@ -56,6 +56,7 @@ class DatasetRecord:
     display_name_ai: str = ""
     description_user: str = ""
     description_ai: str = ""
+    raw_import_data: str = ""
     geometry_type: str = ""
     feature_count: int = 0
     crs: str = ""
