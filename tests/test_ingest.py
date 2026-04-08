@@ -190,6 +190,54 @@ class IngestServiceTests(unittest.TestCase):
             self.assertTrue(datasets[0].has_source_style)
             self.assertIn("QGIS QML style file", datasets[0].source_style_summary)
 
+    def test_scan_can_collect_associated_xml_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            points = gpd.GeoDataFrame(
+                {"name": ["a"]},
+                geometry=[Point(10.4, 63.4)],
+                crs="EPSG:4326",
+            )
+            points.to_file(root / "points.shp")
+            (root / "points.shp.xml").write_text(
+                "<?xml version=\"1.0\" encoding=\"UTF-8\"?><metadata><idinfo><citation>Road points</citation></idinfo></metadata>",
+                encoding="utf-8",
+            )
+
+            service = IngestService()
+            without_metadata = service.scan_folder(root)
+            with_metadata = service.scan_folder(root, collect_available_metadata=True)
+
+            self.assertEqual(without_metadata[0].raw_import_data, "")
+            self.assertIn("<metadata>", with_metadata[0].raw_import_data)
+            self.assertIn("Road points", with_metadata[0].raw_import_data)
+
+    def test_scan_rechecks_when_associated_xml_metadata_changes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            points = gpd.GeoDataFrame(
+                {"name": ["a"]},
+                geometry=[Point(10.4, 63.4)],
+                crs="EPSG:4326",
+            )
+            points.to_file(root / "points.shp")
+            metadata_path = root / "points.shp.xml"
+            metadata_path.write_text(
+                "<?xml version=\"1.0\" encoding=\"UTF-8\"?><metadata><idinfo><citation>Version A</citation></idinfo></metadata>",
+                encoding="utf-8",
+            )
+
+            service = IngestService()
+            first = service.scan_folder(root, collect_available_metadata=True)
+            metadata_path.write_text(
+                "<?xml version=\"1.0\" encoding=\"UTF-8\"?><metadata><idinfo><citation>Version B</citation></idinfo></metadata>",
+                encoding="utf-8",
+            )
+            second = service.scan_folder(root, first, collect_available_metadata=True)
+
+            self.assertIn("Version A", first[0].raw_import_data)
+            self.assertIn("Version B", second[0].raw_import_data)
+
     def test_scan_refreshes_source_style_flags_when_sidecar_is_added(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
