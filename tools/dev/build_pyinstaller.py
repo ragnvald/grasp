@@ -7,7 +7,17 @@ from pathlib import Path
 
 
 APP_NAME = "grasp-desktop"
-GEOSTACK_PACKAGES = (
+GEOSTACK_BINARY_PACKAGES = (
+    "pyarrow",
+    "shapely",
+    "fiona",
+    "pyproj",
+)
+GEOSTACK_DATA_PACKAGES = (
+    "fiona",
+    "pyproj",
+)
+GEOSTACK_METADATA_PACKAGES = (
     "geopandas",
     "pandas",
     "pyarrow",
@@ -56,8 +66,14 @@ def main(argv: list[str] | None = None) -> int:
         if asset.is_file():
             cmd.extend(["--add-data", f"{asset}{separator}grasp/ui/assets"])
 
-    for package in GEOSTACK_PACKAGES:
-        cmd.extend(["--collect-all", package])
+    for package in GEOSTACK_BINARY_PACKAGES:
+        cmd.extend(["--collect-binaries", package])
+
+    for package in GEOSTACK_DATA_PACKAGES:
+        cmd.extend(["--collect-data", package])
+
+    for package in GEOSTACK_METADATA_PACKAGES:
+        cmd.extend(["--copy-metadata", package])
 
     for hidden_import in _qt_hidden_imports():
         cmd.extend(["--hidden-import", hidden_import])
@@ -108,6 +124,20 @@ def _qt_excluded_modules() -> list[str]:
         "PyQtWebEngine",
         "PyQtWebEngine.QtWebEngineCore",
         "PyQtWebEngine.QtWebEngineWidgets",
+        "pyogrio",
+        "pyogrio._io",
+        "geopandas.tests",
+        "geopandas.io.tests",
+        "geopandas.tools.tests",
+        "pandas.tests",
+        "pyarrow.tests",
+        "shapely.tests",
+        "pytest",
+        "_pytest",
+        "py",
+        "IPython",
+        "matplotlib",
+        "jinja2",
     ]
 
 
