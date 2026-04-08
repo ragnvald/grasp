@@ -108,9 +108,10 @@ MAP_HTTP_USER_AGENT = f"GRASP-Desktop (+{APP_REPOSITORY_URL})"
 UI_ASSETS_DIR = Path(__file__).resolve().parent / "assets"
 ABOUT_ILLUSTRATION_PATH = UI_ASSETS_DIR / "about_robot_gpkg.png"
 APP_ICON_PATH = UI_ASSETS_DIR / "grasp_app_icon.svg"
-# These labels reflect the current archive-oriented wording requested for the import flow.
-LOAD_ARCHIVE_LABEL = "Load data from folder"
+# These labels reflect the database-backed import flow.
+LOAD_ARCHIVE_LABEL = "Load from database"
 REBUILD_ARCHIVE_LABEL = "Rebuild archive"
+DELETE_DATABASE_LABEL = "Delete database"
 TAB_PAGE_MARGIN_PX = 6
 MANAGE_ACTION_BUTTON_WIDTH_PX = 216
 MANAGE_ACTION_BUTTON_HEIGHT_PX = 34
@@ -289,8 +290,6 @@ class MainWindow(QMainWindow):
         self.review_datasets_tab.setObjectName("ReviewDatasetsTab")
         self.info_sources_tab = QWidget()
         self.info_sources_tab.setObjectName("InfoSourcesTab")
-        self.datasets_overview_tab = QWidget()
-        self.datasets_overview_tab.setObjectName("DatasetsOverviewTab")
         self.map_tab = QWidget()
         self.map_tab.setObjectName("MapTab")
         self.settings_tab = QWidget()
@@ -299,9 +298,8 @@ class MainWindow(QMainWindow):
         self.about_tab.setObjectName("AboutTab")
 
         self.tabs.addTab(self.import_tab, "Import")
-        self.tabs.addTab(self.datasets_overview_tab, "Datasets overview")
-        self.tabs.addTab(self.review_datasets_tab, "Review datasets")
         self.tabs.addTab(self.info_sources_tab, "Manage data")
+        self.tabs.addTab(self.review_datasets_tab, "Review datasets")
         self.tabs.addTab(self.map_tab, "Map")
         self.tabs.addTab(self.settings_tab, "Settings")
         self.tabs.addTab(self.about_tab, "About")
@@ -309,7 +307,6 @@ class MainWindow(QMainWindow):
         self._build_import_tab()
         self._build_review_datasets_tab()
         self._build_info_sources_tab()
-        self._build_datasets_overview_tab()
         self._build_map_tab()
         self._build_settings_tab()
         self._build_about_tab()
@@ -332,7 +329,7 @@ class MainWindow(QMainWindow):
         scan_action.triggered.connect(self.start_scan)
         file_menu.addAction(scan_action)
 
-        self.reset_data_action = QAction("Reset All Data", self)
+        self.reset_data_action = QAction(DELETE_DATABASE_LABEL, self)
         self.reset_data_action.triggered.connect(self.reset_all_data)
         file_menu.addAction(self.reset_data_action)
 
@@ -377,12 +374,12 @@ class MainWindow(QMainWindow):
         controls_layout.addWidget(self.rebuild_archive_button, 1, 0)
 
         self.load_catalog_button = QPushButton(LOAD_ARCHIVE_LABEL)
-        self.load_catalog_button.setToolTip("Reopen the existing local catalog for this folder without rescanning.")
+        self.load_catalog_button.setToolTip("Load the existing catalog database for this folder without rescanning.")
         self.load_catalog_button.clicked.connect(self.load_existing_catalog)
         controls_layout.addWidget(self.load_catalog_button, 1, 1)
 
-        self.reset_all_data_button = QPushButton("Reset All Data")
-        self.reset_all_data_button.setToolTip("Delete the local catalog, cache, exports, and logs for this folder.")
+        self.reset_all_data_button = QPushButton(DELETE_DATABASE_LABEL)
+        self.reset_all_data_button.setToolTip("Delete the catalog database and its local generated files for this folder.")
         self.reset_all_data_button.setProperty("buttonRole", "destructive")
         self.reset_all_data_button.clicked.connect(self.reset_all_data)
         controls_layout.addWidget(self.reset_all_data_button, 1, 2, 1, 2)
@@ -391,13 +388,27 @@ class MainWindow(QMainWindow):
         controls_layout.setColumnStretch(2, 1)
         layout.addLayout(controls_layout)
 
+        import_options_host = QWidget()
+        import_options_layout = QHBoxLayout(import_options_host)
+        import_options_layout.setContentsMargins(0, 0, 0, 0)
+        import_options_layout.setSpacing(12)
+
         self.simplify_import_names_checkbox = QCheckBox("Simplify long dataset names on import")
         self.simplify_import_names_checkbox.setChecked(False)
         self.simplify_import_names_checkbox.setToolTip(
             "Shorten long technical source names during import and move the omitted source naming context into "
             "Description. Existing manual Name/Description edits are kept."
         )
-        layout.addWidget(self.simplify_import_names_checkbox)
+        import_options_layout.addWidget(self.simplify_import_names_checkbox)
+
+        self.collect_available_metadata_checkbox = QCheckBox("Collect available metadata")
+        self.collect_available_metadata_checkbox.setChecked(False)
+        self.collect_available_metadata_checkbox.setToolTip(
+            "Import associated sidecar metadata such as .xml files and store it in Raw import data during rebuild."
+        )
+        import_options_layout.addWidget(self.collect_available_metadata_checkbox)
+        import_options_layout.addStretch(1)
+        layout.addWidget(import_options_host)
 
         self.import_summary = QLabel("No folder loaded.")
         layout.addWidget(self.import_summary)
@@ -526,6 +537,12 @@ class MainWindow(QMainWindow):
         self.ai_description_box.setMaximumHeight(96)
         dataset_form.addRow("AI description", self.ai_description_box)
 
+        self.raw_import_data_box = QPlainTextEdit()
+        self.raw_import_data_box.setReadOnly(True)
+        self.raw_import_data_box.setMinimumHeight(96)
+        self.raw_import_data_box.setMaximumHeight(140)
+        dataset_form.addRow("Raw import data", self.raw_import_data_box)
+
         self.transfer_ai_selected_button = QPushButton("Transfer AI to Name + Description")
         self.transfer_ai_selected_button.clicked.connect(self.use_ai_for_selected_dataset)
         self.transfer_ai_selected_button.setMaximumWidth(220)
@@ -642,6 +659,7 @@ class MainWindow(QMainWindow):
         self.selection_scope_status_label.setWordWrap(True)
         selection_layout.addWidget(self.selection_scope_status_label)
         layout.addWidget(self.selection_group_box)
+        self._build_datasets_group_box(layout)
 
         workflow_sections_layout = QHBoxLayout()
         workflow_sections_layout.setContentsMargins(0, 0, 0, 0)
@@ -733,7 +751,7 @@ class MainWindow(QMainWindow):
         self.dataset_actions_help_label.setWordWrap(True)
         dataset_actions_layout.addWidget(self.dataset_actions_help_label, 4, 0, 1, 2)
         workflow_sections_layout.addWidget(self.dataset_actions_group_box, 1)
-        layout.addLayout(workflow_sections_layout, 1)
+        layout.addLayout(workflow_sections_layout)
 
         self.review_job_group_box = QGroupBox("Current run")
         review_job_layout = QVBoxLayout(self.review_job_group_box)
@@ -742,7 +760,7 @@ class MainWindow(QMainWindow):
         review_job_layout.addWidget(self.review_job_status)
 
         self.review_visibility_note = QLabel(
-            "The checked working set is shared with the checkboxes in Datasets overview. "
+            "The checked working set is shared with the checkboxes in the dataset list on this page. "
             "Visible on map is controlled separately in Review datasets. On import, the app auto-enables map visibility for up to "
             f"{MAX_AUTO_VISIBLE_DATASETS} smaller layers (max {MAX_AUTO_VISIBLE_FEATURES} features each) "
             "and leaves the rest off to keep the map responsive."
@@ -785,11 +803,7 @@ class MainWindow(QMainWindow):
         )
         self._populate_selection_group_combo()
 
-    def _build_datasets_overview_tab(self) -> None:
-        layout = QVBoxLayout(self.datasets_overview_tab)
-        layout.setContentsMargins(TAB_PAGE_MARGIN_PX, TAB_PAGE_MARGIN_PX, TAB_PAGE_MARGIN_PX, TAB_PAGE_MARGIN_PX)
-        layout.setSpacing(8)
-
+    def _build_datasets_group_box(self, parent_layout: QVBoxLayout) -> None:
         self.datasets_group_box = QGroupBox("Datasets")
         datasets_group_layout = QVBoxLayout(self.datasets_group_box)
 
@@ -803,12 +817,12 @@ class MainWindow(QMainWindow):
         datasets_group_layout.addWidget(self.tree, 1)
 
         self.datasets_help_note = QLabel(
-            "Tip: Drag datasets between groups in the overview below to reorganize them manually. "
-            "Checkboxes here define the batch-selection scope used by Manage data."
+            "Tip: Drag datasets between groups below to reorganize them manually. "
+            "Checkboxes here define the checked working set used by the actions on this page."
         )
         self.datasets_help_note.setWordWrap(True)
         datasets_group_layout.addWidget(self.datasets_help_note)
-        layout.addWidget(self.datasets_group_box, 1)
+        parent_layout.addWidget(self.datasets_group_box, 1)
 
     def _build_map_tab(self) -> None:
         layout = QVBoxLayout(self.map_tab)
@@ -1109,7 +1123,12 @@ class MainWindow(QMainWindow):
         self.import_progress.setValue(0)
         self.append_activity_log(f"Loading datasets from {folder}", activity=REBUILD_ARCHIVE_LABEL)
         existing_records = self.repository.list_datasets() if self.repository is not None else []
-        worker = FunctionWorker(self.ingest_service.scan_folder, folder, existing_records)
+        worker = FunctionWorker(
+            self.ingest_service.scan_folder,
+            folder,
+            existing_records,
+            collect_available_metadata=self.collect_available_metadata_checkbox.isChecked(),
+        )
         progress_token = self._begin_background_activity("Rebuilding archive...", activity=REBUILD_ARCHIVE_LABEL)
         self._active_workers[progress_token] = worker
         worker.signals.status.connect(lambda message: self.append_activity_log(message, activity=REBUILD_ARCHIVE_LABEL))
@@ -1148,6 +1167,12 @@ class MainWindow(QMainWindow):
         if source_style_count:
             self.append_activity_log(
                 f"Detected possible source styling for {source_style_count} dataset(s). Review Source styling before using Generate Styles.",
+                activity=REBUILD_ARCHIVE_LABEL,
+            )
+        raw_import_count = sum(1 for dataset in datasets if dataset.raw_import_data.strip())
+        if raw_import_count:
+            self.append_activity_log(
+                f"Imported raw sidecar metadata for {raw_import_count} dataset(s). Review Raw import data in Review datasets.",
                 activity=REBUILD_ARCHIVE_LABEL,
             )
         if sync_summary["reused_ids"]:
@@ -2273,7 +2298,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(preview_box, 1)
 
         question_label = QLabel(
-            "Apply these group assignments? You can still drag datasets between groups in the Datasets overview tab afterward."
+            "Apply these group assignments? You can still drag datasets between groups in Manage data afterward."
         )
         question_label.setObjectName("regroupQuestionLabel")
         question_label.setWordWrap(True)
@@ -2312,6 +2337,7 @@ class MainWindow(QMainWindow):
                 self.ai_title_label.setText("-")
                 self.ai_group_label.setText("-")
                 self.ai_description_box.setPlainText("")
+                self.raw_import_data_box.setPlainText("")
                 return
             self.dataset_name_edit.setText(dataset.display_name_user or dataset.default_name)
             self.dataset_description_edit.setPlainText(dataset.description_user)
@@ -2327,6 +2353,7 @@ class MainWindow(QMainWindow):
             self.ai_title_label.setText(dataset.display_name_ai or "-")
             self.ai_group_label.setText(dataset.suggested_group or "-")
             self.ai_description_box.setPlainText(dataset.description_ai or "")
+            self.raw_import_data_box.setPlainText(dataset.raw_import_data or "")
         finally:
             self._populating_inspector = False
 
